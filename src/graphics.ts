@@ -1,104 +1,42 @@
 import { mat2d, mat3, vec2 } from "gl-matrix";
-import { Transform } from "./transforms";
-import * as Zen from "./zen";
+import { Transform, View } from "./zen";
+import { Entity } from "./state";
+
+//TODO depth and stencil render buffers
+const renderTextures: Map<string, RenderTexture> = new Map();
 
 async function init() {
-  Zen.defineAttribute(Draw);
-  Zen.defineAttribute(DrawGroup);
+  renderTextures.set("COLOR", new RenderTexture(View.gl(), "rgba8", 1, true));
 
-  const canvas = document.querySelector("#zen-app")! as HTMLCanvasElement;
-  canvas.style.width = "100%";
-  canvas.style.height = "100%";
-
-  const gl = canvas.getContext("webgl2");
-  if (!gl) throw new Error("failed to get webgl2 context");
-
-  gl.clearColor(0.07, 0.07, 0.07, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  const vp = Zen.createResource(Viewport, new Viewport(gl));
-  vp.zoom = 0.01;
-
-  new ResizeObserver(onResize).observe(canvas, { box: "content-box" });
-
-  Zen.createSystem(
-    { with: [Draw], resources: [Viewport] },
-    { foreach: enqueueDraw, once: draw },
-  );
+  // Zen.createSystem(
+  //   { with: [Draw], resources: [Viewport] },
+  //   { foreach: enqueueDraw, once: draw },
+  // );
 }
 
-export class Viewport {
-  resolution: vec2 = [0, 0];
-  screen: vec2 = [0, 0];
-  transform: Transform = new Transform({ pivot: [0.5, 0.5] });
-  zoom: number = 1;
-  gl: WebGL2RenderingContext;
+function createRenderTexture(
+  name: string,
+  format: TextureFormat,
+  resolution: number,
+  swappable: boolean,
+): RenderTexture {
+  const rt = renderTextures.get(name);
 
-  private renderTextures: Map<string, RenderTexture>;
-  //TODO depth and stencil render buffers
-
-  constructor(gl: WebGL2RenderingContext) {
-    this.gl = gl;
-
-    this.renderTextures = new Map();
-    this.renderTextures.set("COLOR", new RenderTexture(gl, "rgba8", 1, true));
+  if (
+    rt &&
+    rt.format === format &&
+    rt.resolution === resolution &&
+    rt.isSwappable() === swappable
+  ) {
+    return rt;
   }
 
-  updateScale() {
-    this.transform.scale = [
-      this.zoom * this.resolution[0],
-      this.zoom * this.resolution[1],
-    ];
-  }
-
-  createRenderTexture(
-    name: string,
-    format: TextureFormat,
-    resolution: number,
-    swappable: boolean,
-  ): RenderTexture {
-    const rt = this.renderTextures.get(name);
-
-    if (
-      rt &&
-      rt.format === format &&
-      rt.resolution === resolution &&
-      rt.isSwappable() === swappable
-    ) {
-      return rt;
-    }
-
-    const newRt = new RenderTexture(this.gl, format, resolution, swappable);
-    this.renderTextures.set(name, newRt);
-    return newRt;
-  }
-
-  screenToWorld(screenPos: vec2): vec2 {
-    // normalize coordinates
-    const spos = vec2.clone(screenPos);
-    spos[0] /= this.screen[0];
-    spos[1] /= this.screen[1];
-
-    const worldPos = vec2.create();
-    const trs = this.transform.trs();
-    return vec2.transformMat2d(worldPos, spos, trs);
-  }
-
-  worldToScreen(worldPos: vec2): vec2 {
-    const screenPos = vec2.create();
-    const trs = this.transform.trs();
-    mat2d.invert(trs, trs);
-    vec2.transformMat2d(screenPos, worldPos, trs);
-
-    // scale coordinates
-    screenPos[0] *= this.screen[0];
-    screenPos[1] *= this.screen[1];
-
-    return screenPos;
-  }
+  const newRt = new RenderTexture(View.gl(), format, resolution, swappable);
+  renderTextures.set(name, newRt);
+  return newRt;
 }
 
-function enqueueDraw(e: Zen.Entity) {
+function enqueueDraw(e: Entity) {
   const d = e.getAttribute<Draw>(Draw)!;
 
   // TRANSFORM built-in property
@@ -602,35 +540,6 @@ export class BufferFormat {
 
     this.buffer = buf;
     this.stride = stride;
-  }
-}
-
-// adapted from WebGl2Fundementals
-// https://webgl2fundamentals.org/webgl/lessons/webgl-resizing-the-canvas.html
-function onResize(entries: ResizeObserverEntry[]) {
-  for (const entry of entries) {
-    const vp = Zen.getResource<Viewport>(Viewport);
-    if (!vp || entry.target !== vp.gl.canvas) continue;
-
-    const size = entry.devicePixelContentBoxSize[0];
-    const displayWidth = Math.round(size.inlineSize);
-    const displayHeight = Math.round(size.blockSize);
-
-    vp.resolution[0] = displayWidth;
-    vp.resolution[1] = displayHeight;
-    vp.screen[0] = displayWidth / window.devicePixelRatio;
-    vp.screen[1] = displayHeight / window.devicePixelRatio;
-    vp.updateScale();
-
-    const needResize =
-      vp.gl.canvas.width !== displayWidth ||
-      vp.gl.canvas.height !== displayHeight;
-
-    if (needResize) {
-      vp.gl.canvas.width = displayWidth;
-      vp.gl.canvas.height = displayHeight;
-      vp.gl.viewport(0, 0, displayWidth, displayHeight);
-    }
   }
 }
 

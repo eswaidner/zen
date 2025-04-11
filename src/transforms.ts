@@ -1,11 +1,6 @@
 import { mat2d, vec2 } from "gl-matrix";
-import { Zen } from "./main";
 
-function init() {
-  Zen.defineAttribute(Transform);
-}
-
-//TODO parent/child relationships
+//TODO relative transforms
 
 export class Transform {
   pos: vec2;
@@ -47,5 +42,3 @@ export class Transform {
     return mat2d.invert(trs, trs);
   }
 }
-
-init();

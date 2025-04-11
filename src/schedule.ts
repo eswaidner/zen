@@ -3,11 +3,6 @@ import { State, Time } from "./zen";
 
 const defaultMaxUpdateSteps = 10;
 
-// default signals
-export const start = signal();
-export const update = signal();
-export const quit = signal();
-
 const tasks: Map<Task, TaskState> = new Map();
 const taskDelays: Map<Task, Delay> = new Map();
 let nextTaskId: number = 0;
@@ -15,6 +10,11 @@ let nextTaskId: number = 0;
 const signals: SignalState[] = [];
 const signalIntervals: SignalTimestep[] = [];
 let nextSignalId: number = 0;
+
+// default signals
+export const start = signal();
+export const update = signal();
+export const quit = signal();
 
 const OpaqueTask = Symbol(); // opaque type tag
 export type Task = number & { [OpaqueTask]: never };
@@ -73,13 +73,13 @@ export function signal(
 
 export function signalBefore(signal: Signal): Signal {
   const s = createSignal();
-  getSignalState(signal).precededBy.push(signal);
+  getSignalState(signal).precededBy.push(s);
   return s;
 }
 
 export function signalAfter(signal: Signal): Signal {
   const s = createSignal();
-  getSignalState(signal).followedBy.push(signal);
+  getSignalState(signal).followedBy.push(s);
   return s;
 }
 
