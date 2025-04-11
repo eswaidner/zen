@@ -3,6 +3,11 @@ import { State, Time } from "./zen";
 
 const defaultMaxUpdateSteps = 10;
 
+// default signals
+export const start = signal();
+export const update = signal();
+export const quit = signal();
+
 const tasks: Map<Task, TaskState> = new Map();
 const taskDelays: Map<Task, Delay> = new Map();
 let nextTaskId: number = 0;
@@ -43,10 +48,12 @@ export function cancelTask(task: Task) {
   taskDelays.delete(task);
 }
 
-export function signal(options: {
-  frequency?: number;
-  maxSteps?: number;
-}): Signal {
+export function signal(
+  options: {
+    frequency?: number;
+    maxSteps?: number;
+  } = {},
+): Signal {
   const s = createSignal();
 
   // invoke signal on a fixed timestep
@@ -118,6 +125,10 @@ function createSignal(): Signal {
   return s;
 }
 
+Time.onStart(() => {
+  invokeSignal(start);
+});
+
 Time.onUpdate(() => {
   for (const [task, delay] of taskDelays) {
     updateDelay(task, delay);
@@ -130,6 +141,12 @@ Time.onUpdate(() => {
   for (let i = 0; i < signalIntervals.length; i++) {
     updateSignalInterval(signalIntervals[i]);
   }
+
+  invokeSignal(update);
+});
+
+Time.onQuit(() => {
+  invokeSignal(quit);
 });
 
 interface TaskState {

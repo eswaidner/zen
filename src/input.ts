@@ -1,6 +1,4 @@
 import { vec2 } from "gl-matrix";
-import { Viewport } from "./graphics";
-import { Zen } from "./main";
 
 function init() {
   Zen.createResource<Input>(Input, new Input());
