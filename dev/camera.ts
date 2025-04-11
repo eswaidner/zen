@@ -1,51 +1,50 @@
 import { vec2 } from "gl-matrix";
-import { Zen } from "../src/main";
-import { Transform, Viewport } from "../src/zen";
+import { Attribute, Entity, query } from "../src/state";
+import { TaskContext } from "../src/schedule";
+import { Schedule, State, Transform, View } from "../src/zen";
 
 function input() {
-  Zen.defineAttribute(Camera);
-  Zen.defineAttribute(SmoothFollow);
+  Schedule.onSignal(Schedule.update, {
+    query: { include: [SmoothFollow, Transform] },
+    foreach: follow,
+  });
 
-  Zen.createSystem({ with: [SmoothFollow, Transform] }, { foreach: follow });
+  const followEnt = State.createEntity();
+  State.addAttribute(followEnt, Camera, new Camera());
+  State.addAttribute(followEnt, SmoothFollow, new SmoothFollow({ speed: 8 }));
+  State.addAttribute(followEnt, Transform, new Transform());
 
-  const followAttr = new SmoothFollow({ speed: 8 });
-  Zen.createEntity()
-    .addAttribute(Camera, new Camera())
-    .addAttribute(SmoothFollow, followAttr)
-    .addAttribute(Transform, new Transform());
+  Schedule.onSignal(Schedule.update, {
+    query: { include: [Camera, Transform] },
 
-  Zen.createSystem(
-    { with: [Camera, Transform], resources: [Viewport] },
-    {
-      foreach: (e) => {
-        const vp = Zen.getResource<Viewport>(Viewport)!;
-        const trs = e.getAttribute<Transform>(Transform)!;
+    foreach: (e) => {
+      const trs = State.getAttribute<Transform>(e, Transform)!;
 
-        vp.transform.pos = vec2.clone(trs.pos);
-        vp.transform.rot = trs.rot;
-      },
+      View.transform().pos = vec2.clone(trs.pos);
+      View.transform().rot = trs.rot;
     },
-  );
+  });
 }
 
-export class Camera {}
+export class Camera extends Attribute {}
 
-export class SmoothFollow {
+export class SmoothFollow extends Attribute {
   speed: number;
-  target?: Zen.Entity;
+  target?: Entity;
 
   constructor(options: { speed: number }) {
+    super();
     this.speed = options.speed;
   }
 }
 
-function follow(e: Zen.Entity, ctx: Zen.SystemContext) {
-  const follow = e.getAttribute<SmoothFollow>(SmoothFollow)!;
-  const trs = e.getAttribute<Transform>(Transform)!;
+function follow(e: Entity, ctx: TaskContext) {
+  const follow = State.getAttribute<SmoothFollow>(e, SmoothFollow)!;
+  const trs = State.getAttribute<Transform>(e, Transform)!;
 
   if (!follow.target) return;
 
-  const targetTrs = follow.target.getAttribute<Transform>(Transform);
+  const targetTrs = State.getAttribute<Transform>(follow.target, Transform);
   if (!targetTrs) return;
 
   const sqDist = vec2.sqrDist(targetTrs.pos, trs.pos);

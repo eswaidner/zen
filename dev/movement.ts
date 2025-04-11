@@ -1,22 +1,22 @@
 import { vec2 } from "gl-matrix";
-import { Zen } from "../src/main";
-import { Transform } from "../src/zen";
+import { Schedule, State, Transform } from "../src/zen";
+import { Attribute, Entity } from "../src/state";
+import { TaskContext } from "../src/schedule";
 
 function init() {
-  Zen.defineAttribute(FaceVelocity);
-  Zen.defineAttribute(Movement);
-  Zen.defineAttribute(Airborne);
-  // Zen.defineAttribute(Gravity);
-
   // Zen.defineAttribute<Height>(Height, {
   //   onRemove: (h) => h.shadow?.destroy(),
   // });
 
-  Zen.createSystem({ with: [Movement, Transform] }, { foreach: move });
-  Zen.createSystem(
-    { with: [FaceVelocity, Movement, Transform] },
-    { foreach: faceVelocity },
-  );
+  Schedule.onSignal(Schedule.update, {
+    query: { include: [Movement, Transform] },
+    foreach: move,
+  });
+
+  Schedule.onSignal(Schedule.update, {
+    query: { include: [FaceVelocity, Movement, Transform] },
+    foreach: faceVelocity,
+  });
 
   // Zen.createSystem(
   //   { with: [Height, Transform], resources: [Viewport] },
@@ -24,10 +24,10 @@ function init() {
   // );
 }
 
-export class Airborne {}
-export class FaceVelocity {}
+export class Airborne extends Attribute {}
+export class FaceVelocity extends Attribute {}
 
-export class Movement {
+export class Movement extends Attribute {
   decay: number;
   mass: number;
   force: vec2 = [0, 0];
@@ -35,6 +35,7 @@ export class Movement {
   maxSpeed?: number;
 
   constructor(options: { decay: number; mass: number }) {
+    super();
     this.decay = options.decay;
     this.mass = options.mass;
   }
@@ -59,9 +60,9 @@ export class Movement {
 //   }
 // }
 
-function move(e: Zen.Entity, ctx: Zen.SystemContext) {
-  const movement = e.getAttribute<Movement>(Movement)!;
-  const trs = e.getAttribute<Transform>(Transform)!;
+function move(e: Entity, ctx: TaskContext) {
+  const movement = State.getAttribute<Movement>(e, Movement)!;
+  const trs = State.getAttribute<Transform>(e, Transform)!;
 
   const accel = vec2.scale(vec2.create(), movement.force, 1 / movement.mass);
   const decel = vec2.scale(vec2.create(), movement.velocity, movement.decay);
@@ -78,9 +79,9 @@ function move(e: Zen.Entity, ctx: Zen.SystemContext) {
   vec2.zero(movement.force);
 }
 
-function faceVelocity(e: Zen.Entity) {
-  const movement = e.getAttribute<Movement>(Movement)!;
-  const trs = e.getAttribute<Transform>(Transform)!;
+function faceVelocity(e: Entity) {
+  const movement = State.getAttribute<Movement>(e, Movement)!;
+  const trs = State.getAttribute<Transform>(e, Transform)!;
 
   if (movement.velocity[0] === 0) return;
   if (Math.sign(trs.scale[0]) != Math.sign(movement.velocity[0])) {

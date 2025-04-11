@@ -1,8 +1,9 @@
 import { mat2d, vec2 } from "gl-matrix";
+import { Attribute } from "./state";
 
 //TODO relative transforms
 
-export class Transform {
+export class Transform extends Attribute {
   pos: vec2;
   rot: number;
   scale: vec2;
@@ -14,6 +15,7 @@ export class Transform {
     scale?: vec2;
     pivot?: vec2;
   }) {
+    super();
     this.pos = properties?.pos || [0, 0];
     this.rot = properties?.rot || 0;
     this.scale = properties?.scale || [1, 1];

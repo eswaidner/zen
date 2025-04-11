@@ -1,12 +1,11 @@
-import { Zen } from "../src/main";
 import { vec2 } from "gl-matrix";
-import { Draw, DrawGroup, Input, Shader, Transform } from "../src/zen";
 import { FaceVelocity, Movement } from "./movement";
 import { SmoothFollow } from "./camera";
+import { Renderer, RenderPass, Shader } from "../src/graphics";
+import { Input, Schedule, State, Transform } from "../src/zen";
+import { Attribute, Entity } from "../src/state";
 
 async function init() {
-  Zen.defineAttribute(Player);
-
   const shader = new Shader(
     `#version 300 es
   precision highp float;
@@ -23,63 +22,50 @@ async function init() {
     "world",
   );
 
-  const g = new DrawGroup(shader);
-  Zen.createEntity().addAttribute(DrawGroup, g);
+  const pass = new RenderPass(shader);
+  const passEnt = State.createEntity();
+  State.addAttribute(passEnt, RenderPass, pass);
 
-  const playerEntity = Zen.createEntity()
-    .addAttribute(Player, new Player())
-    .addAttribute(Transform, new Transform({ pivot: [0.5, 0.5] }))
-    .addAttribute(Movement, new Movement({ decay: 0.4, mass: 1 }))
-    .addAttribute(FaceVelocity, new FaceVelocity())
-    .addAttribute(Draw, new Draw(g));
+  const p = State.createEntity("player");
+  State.addAttribute(p, Player, new Player());
+  State.addAttribute(p, Transform, new Transform({ pivot: [0.5, 0.5] }));
+  State.addAttribute(p, Movement, new Movement({ decay: 0.4, mass: 1 }));
+  State.addAttribute(p, FaceVelocity, new FaceVelocity());
+  State.addAttribute(p, Renderer, new Renderer(pass));
+  State.addAttribute(p, PlayerInput, new PlayerInput());
 
-  Zen.createResource(PlayerEntity, new PlayerEntity(playerEntity));
-  Zen.createResource(PlayerInput, new PlayerInput());
-
-  Zen.createSystem(
-    { with: [Player, Movement], resources: [PlayerInput, Input] },
-    { foreach: processInput },
-  );
+  Schedule.onSignal(Schedule.update, {
+    query: { include: [Player, PlayerInput, Movement] },
+    foreach: processInput,
+  });
 
   //TEMP, does not work for multiple targets
-  Zen.createSystem(
-    { with: [SmoothFollow] },
-    {
-      foreach: (e) => {
-        const follow = e.getAttribute<SmoothFollow>(SmoothFollow)!;
-        follow.target = playerEntity;
-      },
+  Schedule.onSignal(Schedule.update, {
+    query: { include: [SmoothFollow] },
+    foreach: (e) => {
+      const follow = State.getAttribute<SmoothFollow>(e, SmoothFollow)!;
+      follow.target = p;
     },
-  );
+  });
 }
 
-export class Player {}
+export class Player extends Attribute {}
 
-export class PlayerEntity {
-  entity: Zen.Entity;
-
-  constructor(e: Zen.Entity) {
-    this.entity = e;
-  }
-}
-
-export class PlayerInput {
-  //TODO move to a behavior attribute
+export class PlayerInput extends Attribute {
   walkForce: number = 4;
 }
 
-export function processInput(e: Zen.Entity) {
-  const input = Zen.getResource<Input>(Input)!;
-  const playerInput = Zen.getResource<PlayerInput>(PlayerInput)!;
-  const movement = e.getAttribute<Movement>(Movement)!;
+export function processInput(e: Entity) {
+  const playerInput = State.getAttribute<PlayerInput>(e, PlayerInput)!;
+  const movement = State.getAttribute<Movement>(e, Movement)!;
 
   let dx = 0;
-  if (input.isKeyDown("d")) dx += 1;
-  if (input.isKeyDown("a")) dx -= 1;
+  if (Input.isKeyDown("d")) dx += 1;
+  if (Input.isKeyDown("a")) dx -= 1;
 
   let dy = 0;
-  if (input.isKeyDown("w")) dy += 1;
-  if (input.isKeyDown("s")) dy -= 1;
+  if (Input.isKeyDown("w")) dy += 1;
+  if (Input.isKeyDown("s")) dy -= 1;
 
   const walkInput: vec2 = [dx, dy];
   const walkDir = vec2.normalize(vec2.create(), walkInput);

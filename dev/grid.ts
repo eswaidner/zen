@@ -1,11 +1,11 @@
-import { Zen } from "../src/main";
-import { Draw, DrawGroup, Shader } from "../src/zen";
+import { Graphics, State } from "../src/zen";
+
 import gridSrc from "./shaders/grid.frag?raw";
+const gridShader = new Graphics.Shader(gridSrc, "fullscreen");
 
-const gridShader = new Shader(gridSrc, "fullscreen");
+const pass = new Graphics.RenderPass(gridShader);
+pass.drawOrder = -1;
 
-const group = new DrawGroup(gridShader);
-group.drawOrder = -1;
-
-Zen.createEntity().addAttribute(DrawGroup, group);
-Zen.createEntity().addAttribute(Draw, new Draw(group));
+const e = State.createEntity();
+State.addAttribute(e, Graphics.RenderPass, new Graphics.RenderPass(gridShader));
+State.addAttribute(e, Graphics.Renderer, new Graphics.Renderer(pass));

@@ -39,6 +39,14 @@ export function zoom(): number {
   return _zoom;
 }
 
+export function setZoom(zoom: number) {
+  _zoom = zoom;
+}
+
+export function updateScale() {
+  _transform.scale = [_zoom * _renderSize[0], _zoom * _renderSize[1]];
+}
+
 export function screenToWorld(screenPos: vec2): vec2 {
   // normalize coordinates
   const spos = vec2.clone(screenPos);
@@ -61,10 +69,6 @@ export function worldToScreen(worldPos: vec2): vec2 {
   screenPos[1] *= _screenSize[1];
 
   return screenPos;
-}
-
-function updateScale() {
-  _transform.scale = [_zoom * _renderSize[0], _zoom * _renderSize[1]];
 }
 
 // adapted from WebGl2Fundementals

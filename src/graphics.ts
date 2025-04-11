@@ -1,17 +1,114 @@
 import { mat2d, mat3, vec2 } from "gl-matrix";
-import { Transform, View } from "./zen";
-import { Entity } from "./state";
+import { Schedule, State, Transform, View } from "./zen";
+import { Attribute, Entity } from "./state";
 
 //TODO depth and stencil render buffers
 const renderTextures: Map<string, RenderTexture> = new Map();
 
-async function init() {
+function init() {
   renderTextures.set("COLOR", new RenderTexture(View.gl(), "rgba8", 1, true));
 
-  // Zen.createSystem(
-  //   { with: [Draw], resources: [Viewport] },
-  //   { foreach: enqueueDraw, once: draw },
-  // );
+  const renderSignal = Schedule.signalAfter(Schedule.update);
+
+  Schedule.onSignal(renderSignal, {
+    query: { include: [Renderer] },
+    foreach: enqueueDraw,
+    once: draw,
+  });
+}
+
+export function createShader() {}
+
+export function createRenderPass() {}
+
+function enqueueDraw(e: Entity) {
+  const d = State.getAttribute<Renderer>(e, Renderer)!;
+
+  // TRANSFORM built-in property
+  // required for all non-fullscreen shaders
+  const t = State.getAttribute<Transform>(e, Transform);
+  if (d.group.shader.mode === "world" && !t) {
+    console.log("ERROR: world shaders require a Transform attribute");
+    return;
+  }
+
+  if (t) d.group.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.trs()));
+
+  // add value to property data buffer
+  for (const p of d.properties) {
+    if (p.type === "float") d.group.propertyValues.push(p.value);
+    else d.group.propertyValues.push(...p.value);
+  }
+
+  d.group.instanceCount++;
+}
+
+function draw() {
+  const q = State.query({ include: [RenderPass] });
+
+  const gl = View.gl();
+  View.updateScale();
+
+  // sort draw groups by drawOrder, smallest drawOrder renders first
+  const groups: RenderPass[] = [];
+  for (let i = 0; i < q.length; i++) {
+    groups.push(State.getAttribute<RenderPass>(q[i], RenderPass)!);
+  }
+  groups.sort((a, b) => a.drawOrder - b.drawOrder);
+
+  // prepare and dispatch an instanced draw call for each draw group
+  // TODO replace with group.draw()
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+
+    gl.useProgram(group.shader.program);
+    gl.bindVertexArray(group.vao);
+
+    const vpTRS = View.transform().trs();
+    const vpTRSI = mat2d.create();
+    mat2d.invert(vpTRSI, vpTRS);
+
+    group.setMatrixUniform(
+      "SCREEN_TO_WORLD",
+      mat3.fromMat2d(mat3.create(), vpTRS),
+    );
+
+    group.setMatrixUniform(
+      "WORLD_TO_SCREEN",
+      mat3.fromMat2d(mat3.create(), vpTRSI),
+    );
+
+    // update uniform values
+    for (const u of Object.values(group.uniformValues)) {
+      switch (u.value.type) {
+        case "float":
+          gl.uniform1f(u.uniform.location, u.value.value);
+          break;
+        case "vec2":
+          gl.uniform2fv(u.uniform.location, u.value.value);
+          break;
+        case "mat3":
+          gl.uniformMatrix3fv(u.uniform.location, false, u.value.value);
+          break;
+      }
+    }
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, group.modelBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, rectVerts, gl.STATIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, group.instanceBuffer.buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array(group.propertyValues),
+      gl.STATIC_DRAW,
+    );
+
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, group.instanceCount);
+    gl.bindVertexArray(null);
+
+    group.instanceCount = 0;
+    group.propertyValues = [];
+  }
 }
 
 function createRenderTexture(
@@ -36,101 +133,6 @@ function createRenderTexture(
   return newRt;
 }
 
-function enqueueDraw(e: Entity) {
-  const d = e.getAttribute<Draw>(Draw)!;
-
-  // TRANSFORM built-in property
-  // required for all non-fullscreen shaders
-  const t = e.getAttribute<Transform>(Transform);
-  if (d.group.shader.mode === "world" && !t) {
-    console.log("ERROR: world shaders require a Transform attribute");
-    return;
-  }
-
-  if (t) d.group.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.trs()));
-
-  // add value to property data buffer
-  for (const p of d.properties) {
-    if (p.type === "float") d.group.propertyValues.push(p.value);
-    else d.group.propertyValues.push(...p.value);
-  }
-
-  d.group.instanceCount++;
-}
-
-function draw() {
-  const q = Zen.query({ with: [DrawGroup] });
-
-  const vp = Zen.getResource<Viewport>(Viewport);
-  if (!vp) return;
-
-  vp.updateScale();
-
-  const t = Zen.getResource<Zen.Time>(Zen.Time);
-  if (!t) return;
-
-  // sort draw groups by drawOrder, smallest drawOrder renders first
-  const groups: DrawGroup[] = [];
-  for (let i = 0; i < q.length; i++) {
-    groups.push(q[i].getAttribute<DrawGroup>(DrawGroup)!);
-  }
-  groups.sort((a, b) => a.drawOrder - b.drawOrder);
-
-  // prepare and dispatch an instanced draw call for each draw group
-  // TODO replace with group.draw()
-  for (let i = 0; i < groups.length; i++) {
-    const group = groups[i];
-
-    vp.gl.useProgram(group.shader.program);
-    vp.gl.bindVertexArray(group.vao);
-
-    const vpTRS = vp.transform.trs();
-    const vpTRSI = mat2d.create();
-    mat2d.invert(vpTRSI, vpTRS);
-
-    group.setMatrixUniform(
-      "SCREEN_TO_WORLD",
-      mat3.fromMat2d(mat3.create(), vpTRS),
-    );
-
-    group.setMatrixUniform(
-      "WORLD_TO_SCREEN",
-      mat3.fromMat2d(mat3.create(), vpTRSI),
-    );
-
-    // update uniform values
-    for (const u of Object.values(group.uniformValues)) {
-      switch (u.value.type) {
-        case "float":
-          vp.gl.uniform1f(u.uniform.location, u.value.value);
-          break;
-        case "vec2":
-          vp.gl.uniform2fv(u.uniform.location, u.value.value);
-          break;
-        case "mat3":
-          vp.gl.uniformMatrix3fv(u.uniform.location, false, u.value.value);
-          break;
-      }
-    }
-
-    vp.gl.bindBuffer(vp.gl.ARRAY_BUFFER, group.modelBuffer);
-    vp.gl.bufferData(vp.gl.ARRAY_BUFFER, rectVerts, vp.gl.STATIC_DRAW);
-
-    vp.gl.bindBuffer(vp.gl.ARRAY_BUFFER, group.instanceBuffer.buffer);
-    vp.gl.bufferData(
-      vp.gl.ARRAY_BUFFER,
-      new Float32Array(group.propertyValues),
-      vp.gl.STATIC_DRAW,
-    );
-
-    vp.gl.drawArraysInstanced(vp.gl.TRIANGLES, 0, 6, group.instanceCount);
-    vp.gl.bindVertexArray(null);
-
-    group.instanceCount = 0;
-    group.propertyValues = [];
-  }
-}
-
 type ShaderMode = "world" | "fullscreen";
 
 export class Shader {
@@ -149,9 +151,7 @@ export class Shader {
       outputs?: Record<string, GLOutputType>;
     },
   ) {
-    const gl = Zen.getResource<Viewport>(Viewport)?.gl;
-    if (!gl) throw new Error("failed to get renderer");
-
+    const gl = View.gl();
     this.mode = mode;
 
     // add uniforms
@@ -283,13 +283,12 @@ class TextureArray {
   private texture: WebGLTexture;
 
   constructor(size: TextureSize, layers: number, sources: TextureSource[]) {
-    const vp = Zen.getResource<Viewport>(Viewport);
-    if (!vp) throw new Error("viewport undefined");
+    const gl = View.gl();
 
-    const tex = vp.gl.createTexture();
-    vp.gl.bindTexture(vp.gl.TEXTURE_2D_ARRAY, tex);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
     //TODO upload texture array data from source (treat as atlas)
-    vp.gl.bindTexture(vp.gl.TEXTURE_2D_ARRAY, null);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
     this.size = size;
     this.layers = layers;
@@ -359,27 +358,28 @@ function getPropertySize(p: Property): number {
   }
 }
 
-export class Draw {
-  group: DrawGroup;
+export class Renderer extends Attribute {
+  group: RenderPass;
   properties: GLValue[] = [];
 
-  constructor(group: DrawGroup) {
+  constructor(group: RenderPass) {
+    super();
     this.group = group;
   }
 
-  setNumberProperty(name: string, value: number): Draw {
+  setNumberProperty(name: string, value: number): Renderer {
     return this.setProperty(name, { type: "float", value });
   }
 
-  setVectorProperty(name: string, value: vec2): Draw {
+  setVectorProperty(name: string, value: vec2): Renderer {
     return this.setProperty(name, { type: "vec2", value });
   }
 
-  setMatrixProperty(name: string, value: mat3): Draw {
+  setMatrixProperty(name: string, value: mat3): Renderer {
     return this.setProperty(name, { type: "mat3", value });
   }
 
-  private setProperty(name: string, value: GLValue): Draw {
+  private setProperty(name: string, value: GLValue): Renderer {
     const idx = this.group.shader.properties.findIndex((p) => p.name === name);
     if (idx < 0) {
       console.log(`WARNING: undefined property '${name}'`);
@@ -391,7 +391,7 @@ export class Draw {
   }
 }
 
-export class DrawGroup {
+export class RenderPass extends Attribute {
   gl: WebGL2RenderingContext;
   shader: Shader;
   vao: WebGLVertexArrayObject;
@@ -411,8 +411,8 @@ export class DrawGroup {
   private stencilBuffer: WebGLRenderbuffer | null = null;
 
   constructor(shader: Shader) {
-    const gl = Zen.getResource<Viewport>(Viewport)?.gl;
-    if (!gl) throw new Error("failed to get renderer");
+    super();
+    const gl = View.gl();
 
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -433,17 +433,17 @@ export class DrawGroup {
     this.framebuffer = fb;
   }
 
-  setNumberUniform(name: string, value: number): DrawGroup {
+  setNumberUniform(name: string, value: number): RenderPass {
     this.setUniform(name, { type: "float", value });
     return this;
   }
 
-  setVectorUniform(name: string, value: vec2): DrawGroup {
+  setVectorUniform(name: string, value: vec2): RenderPass {
     this.setUniform(name, { type: "vec2", value });
     return this;
   }
 
-  setMatrixUniform(name: string, value: mat3): DrawGroup {
+  setMatrixUniform(name: string, value: mat3): RenderPass {
     this.setUniform(name, { type: "mat3", value });
     return this;
   }
@@ -458,7 +458,7 @@ export class DrawGroup {
     this.uniformValues[name] = { uniform: u, value };
   }
 
-  setTexture(name: string, value: TextureArray): DrawGroup {
+  setTexture(name: string, value: TextureArray): RenderPass {
     const u = this.shader.uniforms.find((u) => u.name === name);
     if (!u || (u.type !== "sampler2D" && u.type !== "sampler2DArray")) {
       console.log(`WARNING: texture array missing sampler '${name}'`);
