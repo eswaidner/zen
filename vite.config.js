@@ -2,7 +2,7 @@
 export default {
   build: {
     lib: {
-      entry: ["src/main.ts"],
+      entry: ["src/zen.ts"],
       formats: ["es"],
       fileName: "zen",
     },

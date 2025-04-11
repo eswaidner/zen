@@ -1,161 +1,106 @@
-const attributes: Map<object, object> = new Map();
-const resources: Map<object, object> = new Map();
-let entityCount: number = 0;
+const entities: Set<Entity> = new Set();
+const namedEntities: Map<string, Entity> = new Map();
+const entityNames: Map<Entity, string> = new Map();
 let nextEntityId: number = 0;
-let shouldExit = false;
 
-function init() {
-  defineAttribute(System);
+const attributes: Map<object, object> = new Map();
 
-  createResource<Time>(Time, new Time());
+const Opaque = Symbol(); // opaque type tag
+export type Entity = number & { [Opaque]: never };
+
+export function entityCount(): number {
+  return entities.size;
 }
 
-export function start() {
-  shouldExit = false;
-  requestAnimationFrame(update);
+export function entityExists(ent: Entity): boolean {
+  return entities.has(ent);
 }
 
-export function stop() {
-  shouldExit = true;
+export abstract class Attribute {
+  onRemove() {}
 }
 
-function update(ts: DOMHighResTimeStamp) {
-  if (shouldExit) return;
-  requestAnimationFrame(update);
-
-  // skip update if time is undefined (should never happen)
-  const t = getResource<Time>(Time);
-  if (!t) return;
-
-  const tsSeconds = ts * 0.001;
-
-  if (t.previous === undefined) t.previous = tsSeconds;
-  else t.previous = t.current;
-
-  t.current = tsSeconds;
-  t.delta = t.current - t.previous;
-  t.elapsed += t.delta;
-
-  // update systems
-  const sysAttr = getAttribute<System>(System);
-  for (const sys of sysAttr!.instances.values()) {
-    sys.update(t);
-  }
-}
-
-export function getEntityCount(): number {
-  return entityCount;
-}
-
-export function defineAttribute<T extends object>(
-  key: object,
-  callbacks?: { onAdd?: AttributeCallback<T>; onRemove?: AttributeCallback<T> },
-) {
-  const attr = new Attribute<T>(callbacks?.onAdd, callbacks?.onRemove);
-  attributes.set(key, attr);
-}
-
-export function createSystem(
-  q: Query,
-  args: {
-    foreach?: (e: Entity, ctx: SystemContext) => void;
-    once?: (ctx: SystemContext) => void;
-    name?: string;
-    frequency?: number;
-  },
-): Entity {
-  const e = createEntity();
-  e.addAttribute<System>(
-    System,
-    new System(q, args.foreach, args.once, args.frequency),
-  );
-  return e;
-}
-
-export function createResource<T>(key: object, value: T): T {
-  if (resources.has(key)) {
-    console.log(
-      `WARNING: resource of type '${key}' already exists, overwriting`,
-    );
-  }
-
-  resources.set(key, value as object);
-  return value;
-}
-
-export function deleteResource(key: object) {
-  resources.delete(key);
-}
-
-export function getResource<T>(key: object): T | undefined {
-  const res = resources.get(key);
-  return res ? (res as T) : undefined;
-}
-
-export function createEntity(): Entity {
-  const ent = new Entity(nextEntityId);
+export function createEntity(name?: string): Entity {
+  const ent = nextEntityId as Entity;
   nextEntityId++; // max safe id is (2^53) – 1
-  entityCount++;
+
+  entities.add(ent);
+  if (name) {
+    namedEntities.set(name, ent);
+    entityNames.set(ent, name);
+  }
 
   return ent;
 }
 
-/** Deletes an entity. Never delete the same entity more than once! */
-export function deleteEntity(e: Entity) {
-  for (const c of Object.values(attributes)) {
-    c.deleteInstance(e.id);
+export function deleteEntity(ent: Entity) {
+  for (const a of attributes.values()) {
+    (a as AttributeStorage<any>).remove(ent);
   }
 
-  // NEVER DELETE AN ENTITY MORE THAN ONCE
-  entityCount--;
+  entities.delete(ent);
+
+  const name = entityNames.get(ent);
+  if (name) {
+    namedEntities.delete(name);
+    entityNames.delete(ent);
+  }
 }
 
-export function getAttribute<T extends object>(
+export function getEntity(name: string): Entity | undefined {
+  return namedEntities.get(name);
+}
+
+export function getAttribute<T extends Attribute>(
+  ent: Entity,
   key: object,
-): Attribute<T> | undefined {
-  const attr = attributes.get(key);
+): T | undefined {
+  return getAttributeStorage(key).get(ent) as T;
+}
 
-  if (!attr) {
-    console.log(`WARNING: undefined attribute '${key}'`);
-    return undefined;
-  }
+export function addAttribute<T extends Attribute>(
+  ent: Entity,
+  key: object,
+  value: T,
+) {
+  getAttributeStorage(key).add(ent, value);
+}
 
-  return attr as Attribute<T>;
+export function removeAttribute(ent: Entity, key: object) {
+  getAttributeStorage(key).remove(ent);
+}
+
+export interface Query {
+  include: object[];
+  exclude?: object[];
 }
 
 export function query(q: Query): Entity[] {
-  if (!q.with || q.with.length === 0) return [];
+  if (q.include.length === 0) return [];
 
-  if (q.resources) {
-    for (const res of q.resources) {
-      if (!getResource<object>(res)) return [];
-    }
-  }
-
-  const base = getAttribute(q.with[0]);
+  const base = getAttributeStorage(q.include[0]);
   if (!base) return [];
 
   const entities: Entity[] = [];
 
   // check all instances of base attribute for matches
-  for (let entId of base.instances.keys()) {
-    const ent = new Entity(entId);
+  for (let ent of base.keys()) {
     let match = true;
 
     // reject entity if a required attribute is missing
-    for (let j = 1; j < q.with.length; j += 1) {
-      const attr = getAttribute(q.with[j]);
-      if (!attr?.instances.get(entId)) {
+    for (let j = 1; j < q.include.length; j += 1) {
+      const attr = getAttributeStorage(q.include[j]);
+      if (!attr?.get(ent)) {
         match = false;
         break;
       }
     }
 
     // reject entity if an excluded attribute is set
-    if (match && q.without) {
-      for (let j = 0; j < q.without.length; j += 1) {
-        const attr = getAttribute(q.without[j]);
-        if (attr && attr.instances.get(entId)) {
+    if (match && q.exclude) {
+      for (let j = 0; j < q.exclude.length; j += 1) {
+        const attr = getAttributeStorage(q.exclude[j]);
+        if (attr && attr.get(ent)) {
           match = false;
           break;
         }
@@ -169,111 +114,39 @@ export function query(q: Query): Entity[] {
   return entities;
 }
 
-type AttributeCallback<T extends object> = (a: T) => void;
+// gets or defines attribute
+function getAttributeStorage<T extends Attribute>(
+  key: object,
+): AttributeStorage<T> {
+  const existing = attributes.get(key);
+  if (existing) return existing as AttributeStorage<T>;
 
-class Attribute<T extends object> {
-  instances: Map<number, T> = new Map();
-  onAdd?: AttributeCallback<T>;
-  onRemove?: AttributeCallback<T>;
-
-  constructor(onAdd?: AttributeCallback<T>, onRemove?: AttributeCallback<T>) {
-    this.onAdd = onAdd;
-    this.onRemove = onRemove;
-  }
-
-  removeInstance(entId: number) {
-    if (!this.instances.has(entId)) return;
-
-    if (this.onRemove) this.onRemove(this.instances.get(entId)!);
-    this.instances.delete(entId);
-  }
+  const attr = new AttributeStorage<T>();
+  attributes.set(key, attr);
+  return attr;
 }
 
-export interface Query {
-  with?: object[];
-  without?: object[];
-  resources?: object[];
-}
+class AttributeStorage<T extends Attribute> {
+  private instances: Map<Entity, T> = new Map();
 
-export class Entity {
-  id: number;
-
-  constructor(id: number) {
-    this.id = id;
+  get(ent: Entity): T | undefined {
+    return this.instances.get(ent);
   }
 
-  getAttribute<T extends object>(key: object): T | undefined {
-    const attr = getAttribute<T>(key);
-    return attr?.instances.get(this.id);
+  add(ent: Entity, attr: T) {
+    if (!entityExists(ent)) return;
+    this.instances.set(ent, attr);
   }
 
-  addAttribute<T extends object>(key: object, value: T): Entity {
-    const attr = getAttribute<T>(key);
-    attr?.instances.set(this.id, value);
-    return this;
+  remove(ent: Entity) {
+    const attr = this.instances.get(ent);
+    if (!attr) return;
+
+    attr.onRemove();
+    this.instances.delete(ent);
   }
 
-  removeAttribute(key: object): Entity {
-    const attr = getAttribute(key);
-    attr?.removeInstance(this.id);
-    return this;
+  keys() {
+    return this.instances.keys();
   }
 }
-
-export class System {
-  interval: number = 0;
-  elapsedInterval: number = 0;
-  query: Query;
-  foreach?: (e: Entity, ctx: SystemContext) => void;
-  once?: (ctx: SystemContext) => void;
-
-  constructor(
-    q: Query,
-    foreach?: (e: Entity, ctx: SystemContext) => void,
-    once?: (ctx: SystemContext) => void,
-    frequency?: number,
-  ) {
-    this.query = q;
-    this.foreach = foreach;
-    this.once = once;
-
-    if (frequency) this.interval = 1 / frequency;
-  }
-
-  update(t: Time) {
-    this.elapsedInterval += t.delta;
-    if (this.elapsedInterval > this.interval) this.execute();
-  }
-
-  execute() {
-    // invoke fn for each entity returned by query
-    const q = query(this.query);
-    const len = q.length;
-
-    const ctx = { entities: q, deltaTime: this.elapsedInterval };
-
-    if (this.foreach) {
-      for (let i = 0; i < len; i++) {
-        this.foreach(q[i], ctx);
-      }
-    }
-
-    if (this.once) this.once(ctx);
-
-    this.elapsedInterval = 0;
-  }
-}
-
-export interface SystemContext {
-  entities: Entity[];
-  deltaTime: number;
-}
-
-export class Time {
-  elapsed: number = 0;
-  delta: number = 0;
-  previous: DOMHighResTimeStamp = 0;
-  current: DOMHighResTimeStamp = 0;
-}
-
-init();
