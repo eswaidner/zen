@@ -1,5 +1,3 @@
-import { Zen } from "./zen";
-
 let elapsedTime: number = 0;
 let deltaTime: number = 0;
 let currentTime: DOMHighResTimeStamp = 0;
