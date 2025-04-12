@@ -1,17 +1,12 @@
 import { vec2 } from "gl-matrix";
 import { FaceVelocity, Movement } from "./movement";
 import { SmoothFollow } from "./camera";
-import {
-  createRenderPass,
-  Renderer,
-  RenderPass,
-  Shader,
-} from "../src/graphics";
-import { Input, Schedule, State, Transform } from "../src/zen";
+import { createRenderPass, Renderer } from "../src/graphics";
+import { Graphics, Input, Schedule, State, Transform } from "../src/zen";
 import { Attribute, Entity } from "../src/state";
 
 async function init() {
-  const shader = new Shader(
+  const shader = Graphics.createShader(
     `#version 300 es
   precision highp float;
 
