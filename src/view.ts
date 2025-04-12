@@ -2,7 +2,7 @@ import { mat2d, vec2 } from "gl-matrix";
 import { Transform } from "./transforms";
 
 let _gl: WebGL2RenderingContext;
-let _transform: Transform = new Transform({ pivot: [0.5, 0.5] });
+const _transform: Transform = new Transform({ pivot: [0.5, 0.5] });
 let _screenSize: vec2 = [0, 0];
 let _renderSize: vec2 = [0, 0];
 let _zoom: number = 0.01;
@@ -14,7 +14,6 @@ function init() {
 
   _gl = canvas.getContext("webgl2")!;
   _gl.clearColor(0.07, 0.07, 0.07, 1);
-  _gl.clear(_gl.COLOR_BUFFER_BIT);
 
   new ResizeObserver(onResize).observe(canvas, { box: "content-box" });
 }

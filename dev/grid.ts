@@ -7,5 +7,5 @@ const pass = new Graphics.RenderPass(gridShader);
 pass.drawOrder = -1;
 
 const e = State.createEntity();
-State.addAttribute(e, Graphics.RenderPass, new Graphics.RenderPass(gridShader));
+State.addAttribute(e, Graphics.RenderPass, pass);
 State.addAttribute(e, Graphics.Renderer, new Graphics.Renderer(pass));

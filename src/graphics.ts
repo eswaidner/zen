@@ -27,20 +27,20 @@ function enqueueDraw(e: Entity) {
   // TRANSFORM built-in property
   // required for all non-fullscreen shaders
   const t = State.getAttribute<Transform>(e, Transform);
-  if (d.group.shader.mode === "world" && !t) {
+  if (d.pass.shader.mode === "world" && !t) {
     console.log("ERROR: world shaders require a Transform attribute");
     return;
   }
 
-  if (t) d.group.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.trs()));
+  if (t) d.pass.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.trs()));
 
   // add value to property data buffer
   for (const p of d.properties) {
-    if (p.type === "float") d.group.propertyValues.push(p.value);
-    else d.group.propertyValues.push(...p.value);
+    if (p.type === "float") d.pass.propertyValues.push(p.value);
+    else d.pass.propertyValues.push(...p.value);
   }
 
-  d.group.instanceCount++;
+  d.pass.instanceCount++;
 }
 
 function draw() {
@@ -49,37 +49,40 @@ function draw() {
   const gl = View.gl();
   View.updateScale();
 
-  // sort draw groups by drawOrder, smallest drawOrder renders first
-  const groups: RenderPass[] = [];
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  // sort render passes by drawOrder, ascending
+  const passes: RenderPass[] = [];
   for (let i = 0; i < q.length; i++) {
-    groups.push(State.getAttribute<RenderPass>(q[i], RenderPass)!);
+    const p = State.getAttribute<RenderPass>(q[i], RenderPass)!;
+    passes.push(p);
   }
-  groups.sort((a, b) => a.drawOrder - b.drawOrder);
+  passes.sort((a, b) => a.drawOrder - b.drawOrder);
 
-  // prepare and dispatch an instanced draw call for each draw group
-  // TODO replace with group.draw()
-  for (let i = 0; i < groups.length; i++) {
-    const group = groups[i];
+  // prepare and dispatch an instanced draw call for each render pass
+  // TODO replace with renderPass.draw()
+  for (let i = 0; i < passes.length; i++) {
+    const pass = passes[i];
 
-    gl.useProgram(group.shader.program);
-    gl.bindVertexArray(group.vao);
+    gl.useProgram(pass.shader.program);
+    gl.bindVertexArray(pass.vao);
 
     const vpTRS = View.transform().trs();
     const vpTRSI = mat2d.create();
     mat2d.invert(vpTRSI, vpTRS);
 
-    group.setMatrixUniform(
+    pass.setMatrixUniform(
       "SCREEN_TO_WORLD",
       mat3.fromMat2d(mat3.create(), vpTRS),
     );
 
-    group.setMatrixUniform(
+    pass.setMatrixUniform(
       "WORLD_TO_SCREEN",
       mat3.fromMat2d(mat3.create(), vpTRSI),
     );
 
     // update uniform values
-    for (const u of Object.values(group.uniformValues)) {
+    for (const u of Object.values(pass.uniformValues)) {
       switch (u.value.type) {
         case "float":
           gl.uniform1f(u.uniform.location, u.value.value);
@@ -93,21 +96,23 @@ function draw() {
       }
     }
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, group.modelBuffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, pass.modelBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, rectVerts, gl.STATIC_DRAW);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, group.instanceBuffer.buffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, pass.instanceBuffer.buffer);
     gl.bufferData(
       gl.ARRAY_BUFFER,
-      new Float32Array(group.propertyValues),
+      new Float32Array(pass.propertyValues),
       gl.STATIC_DRAW,
     );
 
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, group.instanceCount);
-    gl.bindVertexArray(null);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, pass.instanceCount);
 
-    group.instanceCount = 0;
-    group.propertyValues = [];
+    gl.bindVertexArray(null);
+    gl.useProgram(null);
+
+    pass.instanceCount = 0;
+    pass.propertyValues = [];
   }
 }
 
@@ -163,7 +168,10 @@ export class Shader {
     }
 
     // add properties
-    this.properties.push({ name: "TRANSFORM", type: "mat3", location: 0 });
+    if (this.mode === "world") {
+      this.properties.push({ name: "TRANSFORM", type: "mat3", location: 0 });
+    }
+
     for (const [name, type] of Object.entries(options?.properties || {})) {
       this.properties.push({ name, type, location: 0 });
     }
@@ -359,12 +367,12 @@ function getPropertySize(p: Property): number {
 }
 
 export class Renderer extends Attribute {
-  group: RenderPass;
+  pass: RenderPass;
   properties: GLValue[] = [];
 
   constructor(group: RenderPass) {
     super();
-    this.group = group;
+    this.pass = group;
   }
 
   setNumberProperty(name: string, value: number): Renderer {
@@ -380,7 +388,7 @@ export class Renderer extends Attribute {
   }
 
   private setProperty(name: string, value: GLValue): Renderer {
-    const idx = this.group.shader.properties.findIndex((p) => p.name === name);
+    const idx = this.pass.shader.properties.findIndex((p) => p.name === name);
     if (idx < 0) {
       console.log(`WARNING: undefined property '${name}'`);
       return this;
@@ -581,9 +589,7 @@ function vertSource(shader: Shader): string {
   }
 
   const screen_pos_calc =
-    shader.mode === "fullscreen"
-      ? "_LOCAL_POS"
-      : "(WORLD_TO_SCREEN * world).xy";
+    shader.mode === "fullscreen" ? "_LOCAL_POS" : "(WORLD_TO_SCREEN * world)";
 
   const world_pos_calc =
     shader.mode === "fullscreen"
@@ -595,7 +601,7 @@ function vertSource(shader: Shader): string {
   uniform mat3 SCREEN_TO_WORLD;
 
   in vec2 _LOCAL_POS; // per-vertex
-  in mat3 TRANSFORM;  // per-instance
+  ${shader.mode === "world" ? "in mat3 TRANSFORM; // per-instance" : ""}
   ${attributes}
 
   out vec2 SCREEN_POS;
