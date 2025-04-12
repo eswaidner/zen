@@ -6,30 +6,30 @@ import { Graphics, Input, Schedule, State, Transform } from "../src/zen";
 import { Attribute, Entity } from "../src/state";
 
 async function init() {
-  const shader = Graphics.createShader(
-    `#version 300 es
-  precision highp float;
+  // const shader = Graphics.createShader(
+  //   `#version 300 es
+  // precision highp float;
 
-  in vec2 SCREEN_POS;
-  in vec2 WORLD_POS;
-  in vec2 LOCAL_POS;
+  // in vec2 SCREEN_POS;
+  // in vec2 WORLD_POS;
+  // in vec2 LOCAL_POS;
 
-  out vec4 color;
-  void main() {
-    color = vec4(LOCAL_POS, 0.0, 1.0);
-  }
-  `,
-    "world",
-  );
+  // out vec4 color;
+  // void main() {
+  //   color = vec4(LOCAL_POS, 0.0, 1.0);
+  // }
+  // `,
+  //   "world",
+  // );
 
-  const pass = createRenderPass(shader);
+  // const pass = createRenderPass(shader);
 
   const p = State.createEntity("player");
   State.addAttribute(p, Player, new Player());
   State.addAttribute(p, Transform, new Transform({ pivot: [0.5, 0.5] }));
   State.addAttribute(p, Movement, new Movement({ decay: 0.4, mass: 1 }));
   State.addAttribute(p, FaceVelocity, new FaceVelocity());
-  State.addAttribute(p, Renderer, new Renderer(pass));
+  // State.addAttribute(p, Renderer, new Renderer(pass));
   State.addAttribute(p, PlayerInput, new PlayerInput());
 
   Schedule.onSignal(Schedule.update, {

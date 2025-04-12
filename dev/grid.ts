@@ -3,7 +3,7 @@ import { Graphics, State } from "../src/zen";
 import gridSrc from "./shaders/grid.frag?raw";
 
 const gridShader = Graphics.createShader(gridSrc, "fullscreen", {
-  outputs: ["COLOR"],
+  // inputs: ["COLOR"],
 });
 const pass = Graphics.createRenderPass(gridShader, { drawOrder: -1 });
 
