@@ -16,6 +16,9 @@ function init() {
   _gl.clearColor(0.07, 0.07, 0.07, 1);
 
   new ResizeObserver(onResize).observe(canvas, { box: "content-box" });
+
+  // force a reflow to immediately invoke resize callback
+  window.getComputedStyle(canvas).width;
 }
 
 export function gl(): WebGL2RenderingContext {

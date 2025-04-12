@@ -2,14 +2,15 @@ import { mat2d, mat3, vec2 } from "gl-matrix";
 import { Schedule, State, Transform, View } from "./zen";
 import { Attribute, Entity } from "./state";
 
-//TODO depth and stencil render buffers
 const renderTextures: Map<string, RenderTexture> = new Map();
+let depthStencilBuffer: WebGLRenderbuffer = createRenderBuffer();
+
+const renderPasses: RenderPass[] = [];
 
 function init() {
   renderTextures.set("COLOR", new RenderTexture(View.gl(), "rgba8", 1, true));
 
   const renderSignal = Schedule.signalAfter(Schedule.update);
-
   Schedule.onSignal(renderSignal, {
     query: { include: [Renderer] },
     foreach: enqueueDraw,
@@ -17,9 +18,33 @@ function init() {
   });
 }
 
-export function createShader() {}
+export function createShader(source: string, mode: ShaderMode): Shader {
+  const shader = new Shader(source, mode);
+  return shader;
+}
 
-export function createRenderPass() {}
+export function createRenderPass(
+  shader: Shader,
+  options: { drawOrder?: number } = {},
+): RenderPass {
+  const pass = new RenderPass(shader);
+  pass.drawOrder = options.drawOrder || 0;
+
+  // sort render passes by drawOrder, ascending
+  insertSorted(renderPasses, pass, (a, b) => a.drawOrder - b.drawOrder);
+
+  return pass;
+}
+
+function insertSorted<T>(
+  arr: T[],
+  item: T,
+  compareFn: (a: T, b: T) => number,
+): T[] {
+  const index = arr.findIndex((e) => compareFn(item, e));
+  arr.splice(index, 0, item);
+  return arr;
+}
 
 function enqueueDraw(e: Entity) {
   const d = State.getAttribute<Renderer>(e, Renderer)!;
@@ -44,25 +69,15 @@ function enqueueDraw(e: Entity) {
 }
 
 function draw() {
-  const q = State.query({ include: [RenderPass] });
-
   const gl = View.gl();
   View.updateScale();
 
   gl.clear(gl.COLOR_BUFFER_BIT);
 
-  // sort render passes by drawOrder, ascending
-  const passes: RenderPass[] = [];
-  for (let i = 0; i < q.length; i++) {
-    const p = State.getAttribute<RenderPass>(q[i], RenderPass)!;
-    passes.push(p);
-  }
-  passes.sort((a, b) => a.drawOrder - b.drawOrder);
-
   // prepare and dispatch an instanced draw call for each render pass
   // TODO replace with renderPass.draw()
-  for (let i = 0; i < passes.length; i++) {
-    const pass = passes[i];
+  for (let i = 0; i < renderPasses.length; i++) {
+    const pass = renderPasses[i];
 
     gl.useProgram(pass.shader.program);
     gl.bindVertexArray(pass.vao);
@@ -136,6 +151,40 @@ function createRenderTexture(
   const newRt = new RenderTexture(View.gl(), format, resolution, swappable);
   renderTextures.set(name, newRt);
   return newRt;
+}
+
+function createRenderBuffer(): WebGLRenderbuffer {
+  const gl = View.gl();
+  const size = View.renderSize();
+  const buf = gl.createRenderbuffer();
+
+  gl.bindRenderbuffer(gl.RENDERBUFFER, buf);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, size[0], size[1]);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+
+  return buf;
+}
+
+function createTexture(size: vec2, format: TextureFormat): WebGLTexture {
+  const gl = View.gl();
+
+  let glFormat;
+  switch (format) {
+    case "rgba8": {
+      glFormat = gl.RGBA8;
+      break;
+    }
+    default: {
+      throw new Error(`unsupported texture format '${format}'`);
+    }
+  }
+
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, glFormat, size[0], size[1]);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+
+  return tex;
 }
 
 type ShaderMode = "world" | "fullscreen";
@@ -324,35 +373,29 @@ class RenderTexture {
     resolution: number,
     swappable: boolean,
   ) {
+    const texSize = vec2.scale(vec2.create(), View.renderSize(), resolution);
+
     this.format = format;
     this.resolution = resolution;
-    this.texture = gl.createTexture();
-    this.altTexture = swappable ? gl.createTexture() : null;
+    this.texture = createTexture(texSize, format);
+    this.altTexture = swappable ? createTexture(texSize, format) : null;
   }
 
   isSwappable(): boolean {
     return this.altTexture !== null;
   }
 
-  borrow(mutable: boolean): TextureRef {
-    //TODO borrow check behavior
-    //TODO allow 1 write access and N read accesses
-    //TODO reference counting
-    return { texture: this.texture, mutable };
-  }
+  //TODO get write/read references, handle swapping
+  // getWriteable(): WebGLTexture {
+  //   return this.texture;
+  // }
 
-  return(ref: TextureRef) {
-    //TODO if swappable, automate swap behavior on mutable return
-  }
+  // getReadable(): WebGLTexture {
+  //   return this.altTexture;
+  // }
 
   //TODO
   // get(x, y): vec4
-  // set(x, y, vec4)
-}
-
-interface TextureRef {
-  texture: WebGLTexture;
-  mutable: boolean;
 }
 
 function getPropertySize(p: Property): number {
@@ -399,7 +442,7 @@ export class Renderer extends Attribute {
   }
 }
 
-export class RenderPass extends Attribute {
+export class RenderPass {
   gl: WebGL2RenderingContext;
   shader: Shader;
   vao: WebGLVertexArrayObject;
@@ -413,13 +456,10 @@ export class RenderPass extends Attribute {
 
   private framebuffer: WebGLFramebuffer;
   private textureArrays: Record<string, TextureArray> = {};
-  private pipelineInputs: RenderTexture[] = [];
-  private pipelineOutputs: RenderTexture[] = [];
-  private depthBuffer: WebGLRenderbuffer | null = null;
-  private stencilBuffer: WebGLRenderbuffer | null = null;
+  private inputs: RenderTexture[] = [];
+  private outputs: RenderTexture[] = [];
 
   constructor(shader: Shader) {
-    super();
     const gl = View.gl();
 
     const vao = gl.createVertexArray();
@@ -428,9 +468,27 @@ export class RenderPass extends Attribute {
     const instanceBuffer = new BufferFormat(gl, shader);
     gl.bindVertexArray(null);
 
+    //TODO set inputs and outputs from shader
+    for (const o of shader.outputs) {
+      //TODO support more output formats
+      //TODO
+      createRenderTexture(o.name, "rgba8", 1, true);
+    }
+
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    //TODO configure framebuffer
+
+    //TODO attach render textures
+    for (const o of this.outputs) {
+    }
+
+    gl.framebufferRenderbuffer(
+      gl.FRAMEBUFFER,
+      gl.DEPTH_STENCIL_ATTACHMENT,
+      gl.RENDERBUFFER,
+      depthStencilBuffer,
+    );
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     this.gl = gl;
