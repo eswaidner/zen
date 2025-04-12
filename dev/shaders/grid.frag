@@ -5,7 +5,7 @@ in vec2 SCREEN_POS;
 in vec2 WORLD_POS;
 in vec2 LOCAL_POS;
 
-out vec4 color;
+layout(location = 0) out vec4 COLOR;
 
 float map(float value, float min1, float max1, float min2, float max2) {
     return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
@@ -40,5 +40,5 @@ void main(void) {
     // if (worldCoord.x < 0.0 || worldCoord.y < 0.0) fg = vec4(0, 0, 0, 1);
     // if (worldCoord.x > 1.0 || worldCoord.y > 1.0) fg = vec4(0, 0, 0, 1);
 
-    color = fg;
+    COLOR = fg;
 }

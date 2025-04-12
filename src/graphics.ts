@@ -2,13 +2,19 @@ import { mat2d, mat3, vec2 } from "gl-matrix";
 import { Schedule, State, Transform, View } from "./zen";
 import { Attribute, Entity } from "./state";
 
+import presentSrc from "./present.frag?raw";
+
 const renderTextures: Map<string, RenderTexture> = new Map();
-let depthStencilBuffer: WebGLRenderbuffer = createRenderBuffer();
+const depthStencilBuffer: RenderBuffer = createDepthStencilBuffer();
 
 const renderPasses: RenderPass[] = [];
 
 function init() {
-  renderTextures.set("COLOR", new RenderTexture(View.gl(), "rgba8", 1, true));
+  createRenderTexture("COLOR", "rgba8", 1, true);
+
+  const present = createShader(presentSrc, "fullscreen");
+  const rp = createRenderPass(present, { drawOrder: 100000 });
+  rp.isPresent = true;
 
   const renderSignal = Schedule.signalAfter(Schedule.update);
   Schedule.onSignal(renderSignal, {
@@ -18,8 +24,12 @@ function init() {
   });
 }
 
-export function createShader(source: string, mode: ShaderMode): Shader {
-  const shader = new Shader(source, mode);
+export function createShader(
+  source: string,
+  mode: ShaderMode,
+  options: ShaderOptions = {},
+): Shader {
+  const shader = new Shader(source, mode, options);
   return shader;
 }
 
@@ -61,8 +71,11 @@ function enqueueDraw(e: Entity) {
 
   // add value to property data buffer
   for (const p of d.properties) {
-    if (p.type === "float") d.pass.propertyValues.push(p.value);
-    else d.pass.propertyValues.push(...p.value);
+    if (p.type === "float" || p.type === "int") {
+      d.pass.propertyValues.push(p.value);
+    } else {
+      d.pass.propertyValues.push(...p.value);
+    }
   }
 
   d.pass.instanceCount++;
@@ -74,60 +87,9 @@ function draw() {
 
   gl.clear(gl.COLOR_BUFFER_BIT);
 
-  // prepare and dispatch an instanced draw call for each render pass
-  // TODO replace with renderPass.draw()
-  for (let i = 0; i < renderPasses.length; i++) {
-    const pass = renderPasses[i];
-
-    gl.useProgram(pass.shader.program);
-    gl.bindVertexArray(pass.vao);
-
-    const vpTRS = View.transform().trs();
-    const vpTRSI = mat2d.create();
-    mat2d.invert(vpTRSI, vpTRS);
-
-    pass.setMatrixUniform(
-      "SCREEN_TO_WORLD",
-      mat3.fromMat2d(mat3.create(), vpTRS),
-    );
-
-    pass.setMatrixUniform(
-      "WORLD_TO_SCREEN",
-      mat3.fromMat2d(mat3.create(), vpTRSI),
-    );
-
-    // update uniform values
-    for (const u of Object.values(pass.uniformValues)) {
-      switch (u.value.type) {
-        case "float":
-          gl.uniform1f(u.uniform.location, u.value.value);
-          break;
-        case "vec2":
-          gl.uniform2fv(u.uniform.location, u.value.value);
-          break;
-        case "mat3":
-          gl.uniformMatrix3fv(u.uniform.location, false, u.value.value);
-          break;
-      }
-    }
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, pass.modelBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, rectVerts, gl.STATIC_DRAW);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, pass.instanceBuffer.buffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array(pass.propertyValues),
-      gl.STATIC_DRAW,
-    );
-
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, pass.instanceCount);
-
-    gl.bindVertexArray(null);
-    gl.useProgram(null);
-
-    pass.instanceCount = 0;
-    pass.propertyValues = [];
+  for (const pass of renderPasses) {
+    if (pass.isPresent) pass.instanceCount = 1;
+    pass.draw();
   }
 }
 
@@ -139,23 +101,39 @@ function createRenderTexture(
 ): RenderTexture {
   const rt = renderTextures.get(name);
 
-  if (
-    rt &&
-    rt.format === format &&
-    rt.resolution === resolution &&
-    rt.isSwappable() === swappable
-  ) {
+  if (rt && rt.format === format && rt.resolution === resolution) {
+    if (swappable) rt.makeSwappable();
     return rt;
   }
 
-  const newRt = new RenderTexture(View.gl(), format, resolution, swappable);
+  const newRt = new RenderTexture(name, format, resolution, swappable);
   renderTextures.set(name, newRt);
   return newRt;
 }
 
-function createRenderBuffer(): WebGLRenderbuffer {
+interface RenderBuffer {
+  buffer: WebGLRenderbuffer;
+  size: vec2;
+}
+
+function createDepthStencilBuffer(): RenderBuffer {
+  const size = scaleTextureSize(View.renderSize(), 1);
+  return { buffer: createRenderBuffer(size), size };
+}
+
+function updateDepthStencilBufferSize() {
+  const newSize = scaleTextureSize(View.renderSize(), 1);
+  const size = depthStencilBuffer.size;
+
+  const needResize = size[0] != newSize[0] || size[1] != newSize[1];
+  if (!needResize) return;
+
+  View.gl().deleteRenderbuffer(depthStencilBuffer.buffer);
+  depthStencilBuffer.buffer = createRenderBuffer(newSize);
+}
+
+function createRenderBuffer(size: vec2): WebGLRenderbuffer {
   const gl = View.gl();
-  const size = View.renderSize();
   const buf = gl.createRenderbuffer();
 
   gl.bindRenderbuffer(gl.RENDERBUFFER, buf);
@@ -189,6 +167,12 @@ function createTexture(size: vec2, format: TextureFormat): WebGLTexture {
 
 type ShaderMode = "world" | "fullscreen";
 
+export interface ShaderOptions {
+  properties?: Record<string, GLType>;
+  uniforms?: Record<string, GLType | GLSamplerType>;
+  outputs?: Record<string, GLOutputType>;
+}
+
 export class Shader {
   program: WebGLProgram;
   mode: ShaderMode;
@@ -196,15 +180,7 @@ export class Shader {
   properties: Property[] = [];
   outputs: Output[] = [];
 
-  constructor(
-    source: string,
-    mode: ShaderMode,
-    options?: {
-      properties?: Record<string, GLType>;
-      uniforms?: Record<string, GLType | GLSamplerType>;
-      outputs?: Record<string, GLOutputType>;
-    },
-  ) {
+  constructor(source: string, mode: ShaderMode, options: ShaderOptions = {}) {
     const gl = View.gl();
     this.mode = mode;
 
@@ -212,7 +188,7 @@ export class Shader {
     this.uniforms.push({ name: "WORLD_TO_SCREEN", type: "mat3", location: 0 });
     this.uniforms.push({ name: "SCREEN_TO_WORLD", type: "mat3", location: 0 });
     //TODO TIME, DELTA_TIME, SCREEN_COLOR
-    for (const [name, type] of Object.entries(options?.uniforms || {})) {
+    for (const [name, type] of Object.entries(options.uniforms || {})) {
       this.uniforms.push({ name, type, location: 0 });
     }
 
@@ -221,13 +197,13 @@ export class Shader {
       this.properties.push({ name: "TRANSFORM", type: "mat3", location: 0 });
     }
 
-    for (const [name, type] of Object.entries(options?.properties || {})) {
+    for (const [name, type] of Object.entries(options.properties || {})) {
       this.properties.push({ name, type, location: 0 });
     }
 
     // add outputs
     this.outputs.push({ name: "COLOR", type: "vec4", location: 0 });
-    for (const [name, type] of Object.entries(options?.outputs || {})) {
+    for (const [name, type] of Object.entries(options.outputs || {})) {
       this.outputs.push({ name, type, location: 0 });
     }
 
@@ -285,8 +261,8 @@ function compileShader(
   throw new Error(`failed to create shader`);
 }
 
-type GLType = "float" | "vec2" | "mat3";
-type GLValue = FloatValue | Vec2Value | Mat3Value;
+type GLType = "float" | "vec2" | "mat3" | "int";
+type GLValue = FloatValue | Vec2Value | Mat3Value | IntValue;
 type GLSamplerType = "sampler2D" | "sampler2DArray";
 type GLOutputType = "float" | "vec4"; //TODO support more types
 type TextureFormat = "rgba8"; //TODO support more formats
@@ -307,6 +283,11 @@ interface Vec2Value {
 interface Mat3Value {
   type: "mat3";
   value: mat3;
+}
+
+interface IntValue {
+  type: "int";
+  value: number;
 }
 
 interface Property {
@@ -334,7 +315,7 @@ class TextureArray {
   size: TextureSize;
   layers: number;
   unit: number | null = null;
-  //TODO mipmap settings
+  // TODO mipmap settings
 
   private data: Uint8ClampedArray;
   private texture: WebGLTexture;
@@ -358,41 +339,86 @@ class TextureArray {
   // set(x, y, depth, vec4)
 }
 
+function scaleTextureSize(size: vec2, scale: number): vec2 {
+  const s = vec2.scale([0, 0], size, scale);
+  s[0] = Math.ceil(s[0]);
+  s[1] = Math.ceil(s[1]);
+
+  // make sure is at least 1x1
+  s[0] = Math.max(1, s[0]);
+  s[1] = Math.max(1, s[1]);
+
+  return s;
+}
+
 class RenderTexture {
+  name: string;
   format: TextureFormat;
   resolution: number;
-  unit: number | null = null;
-  //TODO mipmap settings
+  texture: WebGLTexture;
+  altTexture: WebGLTexture | null;
 
-  private texture: WebGLTexture;
-  private altTexture: WebGLTexture | null;
+  private size: vec2;
 
   constructor(
-    gl: WebGL2RenderingContext,
+    name: string,
     format: TextureFormat,
     resolution: number,
     swappable: boolean,
   ) {
-    const texSize = vec2.scale(vec2.create(), View.renderSize(), resolution);
+    const res = Math.max(0.01, resolution);
+    const texSize = scaleTextureSize(View.renderSize(), res);
 
+    this.name = name;
     this.format = format;
-    this.resolution = resolution;
+    this.resolution = res;
+    this.size = texSize;
     this.texture = createTexture(texSize, format);
     this.altTexture = swappable ? createTexture(texSize, format) : null;
+  }
+
+  updateSize() {
+    const newSize = vec2.scale([0, 0], View.renderSize(), this.resolution);
+    const size = this.size;
+
+    const needResize = newSize[0] !== size[0] || newSize[1] !== size[1];
+    if (!needResize) return;
+
+    const gl = View.gl();
+
+    gl.deleteTexture(this.texture);
+    this.texture = createTexture(newSize, this.format);
+
+    if (this.altTexture) {
+      gl.deleteTexture(this.altTexture);
+      this.altTexture = createTexture(newSize, this.format);
+    }
+  }
+
+  makeSwappable() {
+    if (this.altTexture) return;
+    this.altTexture = createTexture(this.size, this.format);
   }
 
   isSwappable(): boolean {
     return this.altTexture !== null;
   }
 
-  //TODO get write/read references, handle swapping
-  // getWriteable(): WebGLTexture {
-  //   return this.texture;
-  // }
+  swap() {
+    if (!this.isSwappable()) return;
 
-  // getReadable(): WebGLTexture {
-  //   return this.altTexture;
-  // }
+    const gl = View.gl();
+    const size = this.size;
+
+    // copy data from texture to altTexture
+    gl.bindTexture(gl.TEXTURE_2D, this.altTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, size[0], size[1]);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    const tex = this.texture;
+    this.texture = this.altTexture!;
+    this.altTexture = tex;
+  }
 
   //TODO
   // get(x, y): vec4
@@ -406,6 +432,8 @@ function getPropertySize(p: Property): number {
       return 2;
     case "mat3":
       return 9;
+    case "int":
+      return 1;
   }
 }
 
@@ -453,7 +481,9 @@ export class RenderPass {
   uniformValues: Record<string, UniformValue> = {};
   samplerSettings: Record<string, SamplerSettings> = {};
   propertyValues: number[] = [];
+  isPresent: boolean = false;
 
+  private scale: number = 1;
   private framebuffer: WebGLFramebuffer;
   private textureArrays: Record<string, TextureArray> = {};
   private inputs: RenderTexture[] = [];
@@ -472,24 +502,10 @@ export class RenderPass {
     for (const o of shader.outputs) {
       //TODO support more output formats
       //TODO
-      createRenderTexture(o.name, "rgba8", 1, true);
+      createRenderTexture(o.name, "rgba8", this.scale, true);
     }
 
     const fb = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-
-    //TODO attach render textures
-    for (const o of this.outputs) {
-    }
-
-    gl.framebufferRenderbuffer(
-      gl.FRAMEBUFFER,
-      gl.DEPTH_STENCIL_ATTACHMENT,
-      gl.RENDERBUFFER,
-      depthStencilBuffer,
-    );
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     this.gl = gl;
     this.shader = shader;
@@ -501,6 +517,11 @@ export class RenderPass {
 
   setNumberUniform(name: string, value: number): RenderPass {
     this.setUniform(name, { type: "float", value });
+    return this;
+  }
+
+  setIntUniform(name: string, value: number): RenderPass {
+    this.setUniform(name, { type: "int", value });
     return this;
   }
 
@@ -537,18 +558,115 @@ export class RenderPass {
   }
 
   draw() {
-    //TODO bind objects (program, vao, framebuffer)
-    //TODO borrow RenderTexture references
-    //TODO bind textures to texture units
-    //TODO update sampler uniform values
-    //TODO upload sampler parameters
-    //TODO update builtin uniform values
-    //TODO upload uniform values
-    //TODO upload model/instance buffer data
-    //TODO dispatch instanced draw call
-    //TODO return RenderTexture references
-    //TODO unbind objects
-    //TODO clear instanceCount and propertyValues state
+    const gl = View.gl();
+
+    // bind objects (program, vao, framebuffer)
+    gl.useProgram(this.shader.program);
+    gl.bindVertexArray(this.vao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+
+    // bind depth stencil buffer
+    updateDepthStencilBufferSize();
+    gl.framebufferRenderbuffer(
+      gl.FRAMEBUFFER,
+      gl.DEPTH_STENCIL_ATTACHMENT,
+      gl.RENDERBUFFER,
+      depthStencilBuffer.buffer,
+    );
+
+    // bind render textures
+    let attachment = 0;
+    for (const rt of this.outputs) {
+      rt.updateSize();
+      rt.texture;
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0 + attachment,
+        gl.TEXTURE_2D,
+        rt.texture,
+        0,
+      );
+
+      attachment++;
+    }
+
+    // do not use framebuffer if this is a present pass
+    if (this.isPresent) gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // bind render texture inputs
+    let texUnit = 0;
+    for (const rt of this.inputs) {
+      const tex = rt.isSwappable() ? rt.altTexture : rt.texture;
+      gl.activeTexture(gl.TEXTURE0 + texUnit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      this.setIntUniform(rt.name, texUnit);
+      texUnit++;
+    }
+
+    for (const [name, tex] of Object.entries(this.textureArrays)) {
+      //TODO bind textures to texture units
+      //TODO update sampler uniform values
+      //TODO upload sampler parameters
+    }
+
+    // update builtin uniform values
+    const vpTRS = View.transform().trs();
+    const vpTRSI = mat2d.create();
+    mat2d.invert(vpTRSI, vpTRS);
+
+    this.setMatrixUniform(
+      "SCREEN_TO_WORLD",
+      mat3.fromMat2d(mat3.create(), vpTRS),
+    );
+
+    this.setMatrixUniform(
+      "WORLD_TO_SCREEN",
+      mat3.fromMat2d(mat3.create(), vpTRSI),
+    );
+
+    // upload uniform values
+    for (const u of Object.values(this.uniformValues)) {
+      switch (u.value.type) {
+        case "float":
+          gl.uniform1f(u.uniform.location, u.value.value);
+          break;
+        case "vec2":
+          gl.uniform2fv(u.uniform.location, u.value.value);
+          break;
+        case "mat3":
+          gl.uniformMatrix3fv(u.uniform.location, false, u.value.value);
+          break;
+        case "int":
+          gl.uniform1i(u.uniform.location, u.value.value);
+      }
+    }
+
+    // upload model buffer data
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.modelBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, rectVerts, gl.STATIC_DRAW);
+
+    // upload instance buffer data
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer.buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array(this.propertyValues),
+      gl.STATIC_DRAW,
+    );
+
+    // dispatch instanced draw call
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.instanceCount);
+
+    // swap render textures
+    for (const rt of this.outputs) rt.swap();
+
+    // unbind objects
+    gl.useProgram(null);
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // clear per-pass state
+    this.instanceCount = 0;
+    this.propertyValues = [];
   }
 }
 
