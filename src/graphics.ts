@@ -282,7 +282,7 @@ function executeRenderPass(p: RenderPassData) {
   let texUnit = 0;
   for (const rt of p.inputs) {
     const name = `IN_${rt.name}`;
-    const tex = rt.isSwappable() ? rt.altTexture : rt.texture;
+    const tex = rt.isDoubleBuffered() ? rt.altTexture : rt.texture;
     gl.activeTexture(gl.TEXTURE0 + texUnit);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     setUniform(p.id, name, { type: "int", value: texUnit });
@@ -346,7 +346,7 @@ function executeRenderPass(p: RenderPassData) {
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, p.instanceCount);
 
   // swap render textures
-  for (const rt of p.outputs) rt.swap();
+  for (const rt of p.outputs) rt.syncBuffers();
 
   // unbind objects
   gl.useProgram(null);
@@ -754,12 +754,12 @@ class RenderTexture {
     this.altTexture = createTexture(this.size);
   }
 
-  isSwappable(): boolean {
+  isDoubleBuffered(): boolean {
     return this.altTexture !== null;
   }
 
-  swap() {
-    if (!this.isSwappable()) return;
+  syncBuffers() {
+    if (!this.isDoubleBuffered()) return;
 
     const gl = View.gl();
     const size = this.size;
@@ -768,10 +768,6 @@ class RenderTexture {
     gl.bindTexture(gl.TEXTURE_2D, this.altTexture);
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, size[0], size[1]);
     gl.bindTexture(gl.TEXTURE_2D, null);
-
-    const tex = this.texture;
-    this.texture = this.altTexture!;
-    this.altTexture = tex;
   }
 }
 
