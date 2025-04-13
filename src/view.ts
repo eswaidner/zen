@@ -79,14 +79,15 @@ export function worldToScreen(worldPos: vec2): vec2 {
 // https://webgl2fundamentals.org/webgl/lessons/webgl-resizing-the-canvas.html
 function onResize(entries: ResizeObserverEntry[]) {
   for (const entry of entries) {
+    const dpr = window.devicePixelRatio;
     const size = entry.devicePixelContentBoxSize[0];
-    const displayWidth = Math.round(size.inlineSize);
-    const displayHeight = Math.round(size.blockSize);
+    const displayWidth = Math.round(size.inlineSize / dpr);
+    const displayHeight = Math.round(size.blockSize / dpr);
 
     _renderSize[0] = displayWidth;
     _renderSize[1] = displayHeight;
-    _screenSize[0] = displayWidth / window.devicePixelRatio;
-    _screenSize[1] = displayHeight / window.devicePixelRatio;
+    _screenSize[0] = displayWidth / dpr;
+    _screenSize[1] = displayHeight / dpr;
     updateScale();
 
     const needResize =

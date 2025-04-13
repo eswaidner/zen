@@ -2,7 +2,7 @@ import { vec2 } from "gl-matrix";
 import { FaceVelocity, Movement } from "./movement";
 import { SmoothFollow } from "./camera";
 import { createRenderPass, Renderer } from "../src/graphics";
-import { Graphics, Input, Schedule, State, Transform } from "../src/zen";
+import { Graphics, Input, Schedule, State, Time, Transform } from "../src/zen";
 import { Attribute, Entity } from "../src/state";
 
 async function init() {
@@ -70,6 +70,9 @@ export function processInput(e: Entity) {
   const forceDelta = vec2.scale(vec2.create(), walkDir, playerInput.walkForce);
 
   vec2.add(movement.force, movement.force, forceDelta);
+
+  const trs = State.getAttribute<Transform>(e, Transform);
+  if (trs) trs.rot += 0.5 * Time.delta();
 }
 
 init();
