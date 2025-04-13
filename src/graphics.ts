@@ -36,7 +36,13 @@ function init() {
 
 export function createRenderPass(
   shader: Shader,
-  options: { drawOrder?: number; scale?: number } = {},
+  options: {
+    drawOrder?: number;
+    // scale?: number; //TODO support render pass scaling
+    depthTest?: DepthTest | "none";
+    depthWrite?: boolean;
+    blend?: BlendFunction;
+  } = {},
 ): RenderPass {
   const gl = View.gl();
 
@@ -48,7 +54,8 @@ export function createRenderPass(
   const instanceBuffer = createInstanceBuffer(shaderData);
   gl.bindVertexArray(null);
 
-  const scale = Math.max(0.01, options.scale || 1);
+  // const scale = Math.max(0.01, options.scale || 1);
+  const scale = 1;
 
   const inputs: RenderTexture[] = [];
   for (const i of shaderData.inputs) {
@@ -60,9 +67,21 @@ export function createRenderPass(
     outputs.push(createRenderTexture(o.name, scale, true));
   }
 
+  const depthOpt = options.depthTest || "less-equal";
+  const depthTest = depthOpt === "none" ? null : glDepthTest(depthOpt);
+  const depthWrite =
+    options.depthWrite !== undefined ? options.depthWrite : true;
+
+  const blend = options.blend
+    ? { src: glBlend(options.blend.src), dest: glBlend(options.blend.dest) }
+    : null;
+
   const pass: RenderPassData = {
     id: renderPasses.length as RenderPass,
     shader: shaderData,
+    depthTest,
+    depthWrite,
+    blend,
     vao,
     modelBuffer,
     instanceBuffer,
@@ -84,9 +103,88 @@ export function createRenderPass(
   return pass.id;
 }
 
+export type DepthTest =
+  | "less"
+  | "less-equal"
+  | "greater"
+  | "greater-equal"
+  | "equal"
+  | "not-equal";
+
+export type Blend =
+  | "zero"
+  | "one"
+  | "src-color"
+  | "dest-color"
+  | "src-alpha"
+  | "dest-alpha"
+  | "one-minus-src-alpha"
+  | "one-minus-dest-alpha"
+  | "one-minus-src-color"
+  | "one-minus-dest-color";
+
+/** Result = (Source Color * src) + (Destination Color * dest) */
+export interface BlendFunction {
+  src: Blend;
+  dest: Blend;
+}
+
+function glDepthTest(test: DepthTest): GLenum {
+  const gl = View.gl();
+
+  switch (test) {
+    case "less":
+      return gl.LESS;
+    case "less-equal":
+      return gl.LEQUAL;
+    case "greater":
+      return gl.GREATER;
+    case "greater-equal":
+      return gl.GEQUAL;
+    case "equal":
+      return gl.EQUAL;
+    case "not-equal":
+      return gl.NOTEQUAL;
+    default:
+      throw new Error(`unsupported depth test '${test}'`);
+  }
+}
+
+function glBlend(blend: Blend): GLenum {
+  const gl = View.gl();
+
+  switch (blend) {
+    case "zero":
+      return gl.ZERO;
+    case "one":
+      return gl.ONE;
+    case "src-color":
+      return gl.SRC_COLOR;
+    case "dest-color":
+      return gl.DST_COLOR;
+    case "src-alpha":
+      return gl.SRC_ALPHA;
+    case "dest-alpha":
+      return gl.DST_ALPHA;
+    case "one-minus-src-alpha":
+      return gl.ONE_MINUS_SRC_ALPHA;
+    case "one-minus-dest-alpha":
+      return gl.ONE_MINUS_DST_ALPHA;
+    case "one-minus-src-color":
+      return gl.ONE_MINUS_SRC_COLOR;
+    case "one-minus-dest-color":
+      return gl.ONE_MINUS_DST_COLOR;
+    default:
+      throw new Error(`unsupported blend factor '${blend}'`);
+  }
+}
+
 interface RenderPassData {
   id: RenderPass;
   shader: ShaderData;
+  depthTest: GLenum | null;
+  depthWrite: boolean;
+  blend: { src: GLenum; dest: GLenum } | null;
   vao: WebGLVertexArrayObject;
   modelBuffer: WebGLBuffer;
   instanceBuffer: WebGLBuffer;
@@ -132,6 +230,14 @@ function getRenderPassData(id: RenderPass): RenderPassData {
 }
 
 // export function createTexture() {}
+
+function clearRenderPass(p: RenderPassData) {
+  const gl = View.gl();
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, p.framebuffer);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
 
 function executeRenderPass(p: RenderPassData) {
   const gl = View.gl();
@@ -223,7 +329,20 @@ function executeRenderPass(p: RenderPassData) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  // dispatch instanced draw call
+  if (p.depthTest) {
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(p.depthTest);
+  } else {
+    gl.disable(gl.DEPTH_TEST);
+  }
+
+  if (p.blend) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(p.blend.src, p.blend.dest);
+  } else {
+    gl.disable(gl.BLEND);
+  }
+
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, p.instanceCount);
 
   // swap render textures
@@ -237,17 +356,6 @@ function executeRenderPass(p: RenderPassData) {
   // clear per-pass state
   p.instanceCount = 0;
   p.propertyValues = [];
-
-  logError();
-}
-
-function logError() {
-  const gl = View.gl();
-  const error = gl.getError();
-  if (error !== gl.NO_ERROR) {
-    console.error("WebGL error:", error);
-    // Handle the error
-  }
 }
 
 function uploadUniformValue(u: UniformValue) {
@@ -274,16 +382,15 @@ function insertSorted<T>(
   item: T,
   compareFn: (a: T, b: T) => number,
 ): T[] {
-  const index = arr.findIndex((e) => compareFn(item, e));
+  const index = arr.findIndex((e) => compareFn(item, e) <= 0);
   arr.splice(index, 0, item);
   return arr;
 }
 
 function enqueueInstance(e: Entity) {
-  const d = State.getAttribute<Renderer>(e, Renderer)!;
-  const pass = getRenderPassData(d.pass);
+  const r = State.getAttribute<Renderer>(e, Renderer)!;
+  const pass = getRenderPassData(r.pass);
 
-  // TRANSFORM built-in property
   // required for all non-fullscreen shaders
   const t = State.getAttribute<Transform>(e, Transform);
   if (pass.shader.mode === "world" && !t) {
@@ -291,10 +398,14 @@ function enqueueInstance(e: Entity) {
     return;
   }
 
+  // _TRANSFORM built-in property
   if (t) pass.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.trs()));
 
+  // _DEPTH built-in property
+  pass.propertyValues.push(r.depth);
+
   // add value to property data buffer
-  for (const p of d.properties) {
+  for (const p of r.properties) {
     if (p.type === "float" || p.type === "int") {
       pass.propertyValues.push(p.value);
     } else {
@@ -309,12 +420,15 @@ function render() {
   const gl = View.gl();
   View.updateScale();
 
-  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
   for (const pass of renderPasses) {
     if (pass.id === presentPass) pass.instanceCount = 1;
     executeRenderPass(pass);
   }
+
+  // clear after execute, guarantees framebuffers are set up
+  for (const pass of renderPasses) clearRenderPass(pass);
 }
 
 function createRenderTexture(
@@ -357,6 +471,7 @@ function updateDepthStencilBufferSize() {
 
   View.gl().deleteRenderbuffer(depthStencilBuffer.buffer);
   depthStencilBuffer.buffer = createRenderBuffer(newSize);
+  depthStencilBuffer.size = newSize;
 }
 
 function createRenderBuffer(size: vec2): WebGLRenderbuffer {
@@ -410,8 +525,9 @@ export function createShader(
 
   // add properties
   if (mode === "world") {
-    properties.push({ name: "TRANSFORM", type: "mat3", location: 0 });
+    properties.push({ name: "_TRANSFORM", type: "mat3", location: 0 });
   }
+  properties.push({ name: "_DEPTH", type: "float", location: 0 });
 
   for (const [name, type] of Object.entries(options.properties || {})) {
     properties.push({ name, type, location: 0 });
@@ -454,12 +570,12 @@ export function createShader(
 
   // get property locations
   for (const p of properties) {
-    p.location = gl.getAttribLocation(program, p.name)!;
+    p.location = gl.getAttribLocation(program, p.name);
   }
 
   // get output locations
-  for (const o of properties) {
-    o.location = gl.getFragDataLocation(program, o.name)!;
+  for (const o of outputs) {
+    o.location = gl.getFragDataLocation(program, o.name);
   }
 
   const shader: ShaderData = {
@@ -601,7 +717,7 @@ class RenderTexture {
   texture: WebGLTexture;
   altTexture: WebGLTexture | null;
 
-  private size: vec2;
+  private size: vec2 = [1, 1];
 
   constructor(name: string, resolution: number, swappable: boolean) {
     const res = Math.max(0.01, resolution);
@@ -615,7 +731,7 @@ class RenderTexture {
   }
 
   updateSize() {
-    const newSize = vec2.scale([0, 0], View.renderSize(), this.resolution);
+    const newSize = scaleTextureSize(View.renderSize(), this.resolution);
     const size = this.size;
 
     const needResize = newSize[0] !== size[0] || newSize[1] !== size[1];
@@ -625,6 +741,7 @@ class RenderTexture {
 
     gl.deleteTexture(this.texture);
     this.texture = createTexture(newSize);
+    this.size = newSize;
 
     if (this.altTexture) {
       gl.deleteTexture(this.altTexture);
@@ -673,14 +790,16 @@ function getPropertySize(p: Property): number {
 
 export class Renderer extends Attribute {
   pass: RenderPass;
+  depth: number; // [0.0, 1.0] range
   properties: GLValue[] = [];
 
   private passData: RenderPassData;
 
-  constructor(pass: RenderPass) {
+  constructor(pass: RenderPass, options: { depth?: number } = {}) {
     super();
     this.pass = pass;
     this.passData = getRenderPassData(pass);
+    this.depth = options.depth !== undefined ? options.depth : 1;
   }
 
   setProperty(name: string, value: GLValue): Renderer {
@@ -722,7 +841,7 @@ function createInstanceBuffer(shader: ShaderData): WebGLBuffer {
   let stride = 0;
 
   // set up attributes
-  for (const p of Object.values(shader.properties)) {
+  for (const p of shader.properties) {
     if (p.location < 0) continue;
 
     const rows = p.type === "mat3" ? 3 : 1;
@@ -768,7 +887,9 @@ function createModelBuffer(): WebGLBuffer {
 }
 
 const defaultProperties = new Set([
-  "TRANSFORM",
+  "_TRANSFORM",
+  "_DEPTH",
+  "DEPTH",
   "SCREEN_POS",
   "WORLD_POS",
   "LOCAL_POS",
@@ -797,16 +918,18 @@ function generateVertexShader(
   const world_pos_calc =
     mode === "fullscreen"
       ? "SCREEN_TO_WORLD * vec3(_LOCAL_POS, 1.0)"
-      : "TRANSFORM * vec3(_LOCAL_POS, 1.0)";
+      : "_TRANSFORM * vec3(_LOCAL_POS, 1.0)";
 
   return `#version 300 es
   uniform mat3 WORLD_TO_SCREEN;
   uniform mat3 SCREEN_TO_WORLD;
 
   layout(location = 0) in vec2 _LOCAL_POS; // per-vertex
-  ${mode === "world" ? "in mat3 TRANSFORM; // per-instance" : ""}
+  ${mode === "world" ? "in mat3 _TRANSFORM; // per-instance" : ""}
+  in float _DEPTH; // per-instance
   ${attributes}
 
+  out float DEPTH;
   out vec2 SCREEN_POS;
   out vec2 WORLD_POS;
   out vec2 LOCAL_POS;
@@ -815,11 +938,12 @@ function generateVertexShader(
   void main() {
     vec3 world = ${world_pos_calc};
 
+    DEPTH = min(0.0, max(1.0, _DEPTH));
     SCREEN_POS = ${screen_pos_calc}.xy;
     WORLD_POS = world.xy;
     LOCAL_POS = _LOCAL_POS;
 
-    gl_Position = vec4((SCREEN_POS - 0.5) * 2.0, 0.0, 1.0);
+    gl_Position = vec4((SCREEN_POS - 0.5) * 2.0, DEPTH, 1.0);
 
     ${interpolations}
   }

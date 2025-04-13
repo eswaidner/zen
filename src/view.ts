@@ -14,6 +14,8 @@ function init() {
 
   _gl = canvas.getContext("webgl2")!;
   _gl.clearColor(0.07, 0.07, 0.07, 1);
+  _gl.clearDepth(1.0);
+  _gl.depthRange(0.0, 1.0);
 
   new ResizeObserver(onResize).observe(canvas, { box: "content-box" });
 

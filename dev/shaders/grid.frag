@@ -1,6 +1,8 @@
 #version 300 es
 precision highp float;
 
+uniform sampler2D IN_COLOR;
+
 in vec2 SCREEN_POS;
 in vec2 WORLD_POS;
 in vec2 LOCAL_POS;
@@ -29,9 +31,13 @@ void main(void) {
 
     float tileGrid = 1.0 - grid(1.0, 0.02, worldCoord.xy * worldSize);
     float chunkGrid = 1.0 - grid(1.0 / 16.0, 0.003, worldCoord.xy * worldSize);
-    // vec4 fg = vec4(max(tileGrid, chunkGrid) * 0.125);
 
-    vec4 fg = vec4(SCREEN_POS, 0.0, 1.0);
+    float grid = max(tileGrid, chunkGrid) * 0.125;
+    vec4 fg = vec4(grid, grid, grid, 1.0);
+
+    if (grid == 0.0) discard;
+
+    // vec4 fg = vec4(SCREEN_POS, 0.0, 1.0);
     // vec4 fg = vec4(WORLD_POS, 0.0, 1.0);
     // vec4 fg = vec4(LOCAL_POS, 0.0, 1.0);
     // vec4 fg = vec4(0.0, 1.0, 0.0, 1.0);
