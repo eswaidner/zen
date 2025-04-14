@@ -2,14 +2,14 @@ import { mat2d, mat3, vec2 } from "gl-matrix";
 import { Schedule, State, Transform, View } from "./zen";
 import { Attribute, Entity } from "./state";
 
+//@ts-expect-error shader file not auto-detected
 import presentSrc from "./present.frag?raw";
 
+const gl = View.gl();
+const framebuffer: Framebuffer = createFramebuffer();
 const shaders: ShaderData[] = [];
 const renderPasses: RenderPassData[] = [];
 let presentPass: RenderPass;
-
-const renderTextures: Map<string, RenderTexture> = new Map();
-const depthStencilBuffer: RenderBuffer = createDepthStencilBuffer();
 
 const OpaqueShader = Symbol(); // opaque type tag
 export type Shader = number & { [OpaqueShader]: never };
@@ -21,10 +21,10 @@ const OpaqueTexture = Symbol(); // opaque type tag
 export type Texture = number & { [OpaqueTexture]: never };
 
 function init() {
-  createRenderTexture("COLOR", 1, true);
+  createRenderTexture("COLOR");
 
   const present = createShader(presentSrc, "fullscreen", { inputs: ["COLOR"] });
-  presentPass = createRenderPass(present, { drawOrder: 100000 });
+  presentPass = createRenderPass(present, { drawOrder: Infinity });
 
   const renderSignal = Schedule.signalAfter(Schedule.update);
   Schedule.onSignal(renderSignal, {
@@ -38,14 +38,11 @@ export function createRenderPass(
   shader: Shader,
   options: {
     drawOrder?: number;
-    // scale?: number; //TODO support render pass scaling
     depthTest?: DepthTest | "none";
     depthWrite?: boolean;
     blend?: BlendFunction;
   } = {},
 ): RenderPass {
-  const gl = View.gl();
-
   const shaderData = shaders[shader];
 
   const vao = gl.createVertexArray();
@@ -54,17 +51,14 @@ export function createRenderPass(
   const instanceBuffer = createInstanceBuffer(shaderData);
   gl.bindVertexArray(null);
 
-  // const scale = Math.max(0.01, options.scale || 1);
-  const scale = 1;
-
-  const inputs: RenderTexture[] = [];
+  const inputs: number[] = [];
   for (const i of shaderData.inputs) {
-    inputs.push(createRenderTexture(i.name, scale, true));
+    inputs.push(createRenderTexture(i.name));
   }
 
-  const outputs: RenderTexture[] = [];
+  const outputs: number[] = [];
   for (const o of shaderData.outputs) {
-    outputs.push(createRenderTexture(o.name, scale, true));
+    outputs.push(createRenderTexture(o.name));
   }
 
   const depthOpt = options.depthTest || "less-equal";
@@ -76,6 +70,15 @@ export function createRenderPass(
     ? { src: glBlend(options.blend.src), dest: glBlend(options.blend.dest) }
     : null;
 
+  // activate render pass outputs
+  const activeAttachments: GLenum[] = [];
+  let activeIdx = 0;
+  for (let i = 0; i < 8; i++) {
+    const activate = outputs[activeIdx] === i;
+    activeAttachments.push(activate ? gl.COLOR_ATTACHMENT0 + i : gl.NONE);
+    if (activate) activeIdx++;
+  }
+
   const pass: RenderPassData = {
     id: renderPasses.length as RenderPass,
     shader: shaderData,
@@ -85,14 +88,13 @@ export function createRenderPass(
     vao,
     modelBuffer,
     instanceBuffer,
-    framebuffer: gl.createFramebuffer(),
     drawOrder: options.drawOrder || 0,
-    scale,
     uniformValues: {},
     samplerSettings: {},
     textureArrays: {},
     inputs,
     outputs,
+    activeAttachments,
     propertyValues: [],
     instanceCount: 0,
   };
@@ -130,8 +132,6 @@ export interface BlendFunction {
 }
 
 function glDepthTest(test: DepthTest): GLenum {
-  const gl = View.gl();
-
   switch (test) {
     case "less":
       return gl.LESS;
@@ -151,8 +151,6 @@ function glDepthTest(test: DepthTest): GLenum {
 }
 
 function glBlend(blend: Blend): GLenum {
-  const gl = View.gl();
-
   switch (blend) {
     case "zero":
       return gl.ZERO;
@@ -191,11 +189,10 @@ interface RenderPassData {
   drawOrder: number;
   uniformValues: Record<string, UniformValue>;
   samplerSettings: Record<string, SamplerSettings>;
-  scale: number;
-  framebuffer: WebGLFramebuffer;
   textureArrays: Record<string, TextureData>;
-  inputs: RenderTexture[];
-  outputs: RenderTexture[];
+  inputs: number[]; // render texture idx
+  outputs: number[]; // render texture idx
+  activeAttachments: GLenum[]; // gl.drawBuffers list
 
   // per-execution state
   instanceCount: number;
@@ -231,58 +228,22 @@ function getRenderPassData(id: RenderPass): RenderPassData {
 
 // export function createTexture() {}
 
-function clearRenderPass(p: RenderPassData) {
-  const gl = View.gl();
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, p.framebuffer);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-}
-
 function executeRenderPass(p: RenderPassData) {
-  const gl = View.gl();
-
   // bind objects (program, vao, framebuffer)
+  //! assumes framebuffer is already bound
   gl.useProgram(p.shader.program);
   gl.bindVertexArray(p.vao);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, p.framebuffer);
 
-  //TODO
-  const drawBuffers: GLenum[] = [];
-
-  // bind depth stencil buffer
-  updateDepthStencilBufferSize();
-  gl.framebufferRenderbuffer(
-    gl.FRAMEBUFFER,
-    gl.DEPTH_STENCIL_ATTACHMENT,
-    gl.RENDERBUFFER,
-    depthStencilBuffer.buffer,
-  );
-
-  // bind render texture outputs
-  let attachment = gl.COLOR_ATTACHMENT0;
-  for (const rt of p.outputs) {
-    rt.updateSize();
-    rt.texture;
-    gl.framebufferTexture2D(
-      gl.FRAMEBUFFER,
-      attachment,
-      gl.TEXTURE_2D,
-      rt.texture,
-      0,
-    );
-
-    drawBuffers.push(attachment);
-    attachment++;
-  }
-
-  gl.drawBuffers(drawBuffers);
+  // activate framebuffer attachments
+  gl.drawBuffers(p.activeAttachments);
 
   // bind render texture inputs
   let texUnit = 0;
-  for (const rt of p.inputs) {
+  for (const rtIdx of p.inputs) {
+    const rt = framebuffer.renderTextures[rtIdx];
+
     const name = `IN_${rt.name}`;
-    const tex = rt.isDoubleBuffered() ? rt.altTexture : rt.texture;
+    const tex = rt.readTexture;
     gl.activeTexture(gl.TEXTURE0 + texUnit);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     setUniform(p.id, name, { type: "int", value: texUnit });
@@ -325,6 +286,7 @@ function executeRenderPass(p: RenderPassData) {
   gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
   // do not use framebuffer if this is the present pass
+  // should always be the final pass
   if (p.id === presentPass) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -345,13 +307,17 @@ function executeRenderPass(p: RenderPassData) {
 
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, p.instanceCount);
 
-  // swap render textures
-  for (const rt of p.outputs) rt.syncBuffers();
+  // sync render texture read/write textures
+  if (p.id !== presentPass) {
+    for (const rt of p.outputs) {
+      gl.readBuffer(gl.COLOR_ATTACHMENT0 + rt);
+      framebuffer.renderTextures[rt].syncBuffers();
+    }
+  }
 
   // unbind objects
   gl.useProgram(null);
   gl.bindVertexArray(null);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
   // clear per-pass state
   p.instanceCount = 0;
@@ -361,7 +327,6 @@ function executeRenderPass(p: RenderPassData) {
 function uploadUniformValue(u: UniformValue) {
   //! assumes gl program is bound
 
-  const gl = View.gl();
   switch (u.value.type) {
     case "float":
       gl.uniform1f(u.uniform.location, u.value.value);
@@ -417,76 +382,101 @@ function enqueueInstance(e: Entity) {
 }
 
 function render() {
-  const gl = View.gl();
   View.updateScale();
+  updateFramebuffer();
 
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer.buffer);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
   for (const pass of renderPasses) {
     if (pass.id === presentPass) pass.instanceCount = 1;
     executeRenderPass(pass);
   }
-
-  // clear after execute, guarantees framebuffers are set up
-  for (const pass of renderPasses) clearRenderPass(pass);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
-function createRenderTexture(
-  name: string,
-  resolution: number,
-  swappable: boolean,
-): RenderTexture {
-  const rt = renderTextures.get(name);
+function createRenderTexture(name: string): number {
+  const rtIdx = framebuffer.renderTextures.findIndex((fb) => fb.name === name);
+  if (rtIdx >= 0) return rtIdx;
 
-  if (!rt) {
-    const newRt = new RenderTexture(name, resolution, swappable);
-    renderTextures.set(name, newRt);
-    return newRt;
+  if (framebuffer.renderTextures.length === 8) {
+    throw new Error(`too many framebuffer attachments (8 max)`);
   }
 
-  if (rt.resolution === resolution) {
-    if (swappable) rt.makeSwappable();
-    return rt;
-  }
-
-  throw new Error(`RenderTexture name collision '${name}'`);
+  const newRt = new RenderTexture(name);
+  const idx = framebuffer.renderTextures.length;
+  framebuffer.renderTextures.push(newRt);
+  return idx;
 }
 
-interface RenderBuffer {
-  buffer: WebGLRenderbuffer;
+interface Framebuffer {
   size: vec2;
+  buffer: WebGLFramebuffer;
+  depthStencilBuffer: WebGLRenderbuffer;
+  renderTextures: RenderTexture[];
 }
 
-function createDepthStencilBuffer(): RenderBuffer {
+function createFramebuffer(rts?: RenderTexture[]): Framebuffer {
   const size = scaleTextureSize(View.renderSize(), 1);
-  return { buffer: createRenderBuffer(size), size };
+
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+
+  // set up depth stencil buffer
+  const depthStencilBuffer = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencilBuffer);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, size[0], size[1]);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+
+  gl.framebufferRenderbuffer(
+    gl.FRAMEBUFFER,
+    gl.DEPTH_STENCIL_ATTACHMENT,
+    gl.RENDERBUFFER,
+    depthStencilBuffer,
+  );
+
+  // set up render textures
+  const renderTextures: RenderTexture[] = rts || [];
+  let attachment = 0;
+  for (const rt of renderTextures) {
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0 + attachment,
+      gl.TEXTURE_2D,
+      rt.writeTexture,
+      0,
+    );
+    attachment++;
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  return { size, buffer: fb, depthStencilBuffer, renderTextures };
 }
 
-function updateDepthStencilBufferSize() {
+function updateFramebuffer() {
   const newSize = scaleTextureSize(View.renderSize(), 1);
-  const size = depthStencilBuffer.size;
+  const size = framebuffer.size;
 
   const needResize = size[0] != newSize[0] || size[1] != newSize[1];
   if (!needResize) return;
 
-  View.gl().deleteRenderbuffer(depthStencilBuffer.buffer);
-  depthStencilBuffer.buffer = createRenderBuffer(newSize);
-  depthStencilBuffer.size = newSize;
-}
+  View.gl().deleteFramebuffer(framebuffer.buffer);
+  View.gl().deleteRenderbuffer(framebuffer.depthStencilBuffer);
 
-function createRenderBuffer(size: vec2): WebGLRenderbuffer {
-  const gl = View.gl();
-  const buf = gl.createRenderbuffer();
+  // resize render textures
+  for (const rt of framebuffer.renderTextures) {
+    rt.updateSize();
+  }
 
-  gl.bindRenderbuffer(gl.RENDERBUFFER, buf);
-  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, size[0], size[1]);
-  gl.bindRenderbuffer(gl.RENDERBUFFER, null);
-
-  return buf;
+  const newBuffer = createFramebuffer(framebuffer.renderTextures);
+  framebuffer.buffer = newBuffer.buffer;
+  framebuffer.size = newBuffer.size;
 }
 
 function createTexture(size: vec2): WebGLTexture {
-  const gl = View.gl();
   const tex = gl.createTexture();
 
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -508,8 +498,6 @@ export function createShader(
     outputs?: string[];
   } = {},
 ): Shader {
-  const gl = View.gl();
-
   const uniforms: Uniform[] = [];
   const properties: Property[] = [];
   const inputs: Input[] = [];
@@ -681,8 +669,6 @@ class TextureData {
   private texture: WebGLTexture;
 
   constructor(size: TextureSize, layers: number, sources: TextureSource[]) {
-    const gl = View.gl();
-
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
     //TODO upload texture array data from source (treat as atlas)
@@ -713,59 +699,41 @@ function scaleTextureSize(size: vec2, scale: number): vec2 {
 
 class RenderTexture {
   name: string;
-  resolution: number;
-  texture: WebGLTexture;
-  altTexture: WebGLTexture | null;
+  writeTexture: WebGLTexture;
+  readTexture: WebGLTexture;
 
   private size: vec2 = [1, 1];
 
-  constructor(name: string, resolution: number, swappable: boolean) {
-    const res = Math.max(0.01, resolution);
-    const texSize = scaleTextureSize(View.renderSize(), res);
+  constructor(name: string) {
+    const texSize = scaleTextureSize(View.renderSize(), 1);
 
     this.name = name;
-    this.resolution = res;
     this.size = texSize;
-    this.texture = createTexture(texSize);
-    this.altTexture = swappable ? createTexture(texSize) : null;
+    this.writeTexture = createTexture(texSize);
+    this.readTexture = createTexture(texSize);
   }
 
   updateSize() {
-    const newSize = scaleTextureSize(View.renderSize(), this.resolution);
+    const newSize = scaleTextureSize(View.renderSize(), 1);
     const size = this.size;
 
     const needResize = newSize[0] !== size[0] || newSize[1] !== size[1];
     if (!needResize) return;
 
-    const gl = View.gl();
+    gl.deleteTexture(this.writeTexture);
+    gl.deleteTexture(this.readTexture);
 
-    gl.deleteTexture(this.texture);
-    this.texture = createTexture(newSize);
+    this.writeTexture = createTexture(newSize);
+    this.readTexture = createTexture(newSize);
+
     this.size = newSize;
-
-    if (this.altTexture) {
-      gl.deleteTexture(this.altTexture);
-      this.altTexture = createTexture(newSize);
-    }
-  }
-
-  makeSwappable() {
-    if (this.altTexture) return;
-    this.altTexture = createTexture(this.size);
-  }
-
-  isDoubleBuffered(): boolean {
-    return this.altTexture !== null;
   }
 
   syncBuffers() {
-    if (!this.isDoubleBuffered()) return;
-
-    const gl = View.gl();
     const size = this.size;
 
-    // copy data from texture to altTexture
-    gl.bindTexture(gl.TEXTURE_2D, this.altTexture);
+    // copy data from writeTexture to readTexture
+    gl.bindTexture(gl.TEXTURE_2D, this.readTexture);
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, size[0], size[1]);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }
@@ -828,8 +796,6 @@ interface SamplerSettings {
 }
 
 function createInstanceBuffer(shader: ShaderData): WebGLBuffer {
-  const gl = View.gl();
-
   const buf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 
@@ -867,7 +833,6 @@ function createInstanceBuffer(shader: ShaderData): WebGLBuffer {
 }
 
 function createModelBuffer(): WebGLBuffer {
-  const gl = View.gl();
   const verts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1]);
 
   const buf = gl.createBuffer();

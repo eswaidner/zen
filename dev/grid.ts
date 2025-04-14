@@ -1,5 +1,6 @@
 import { Graphics, State } from "../src/zen";
 
+//@ts-expect-error shader file not auto-detected
 import gridSrc from "./shaders/grid.frag?raw";
 
 const gridShader = Graphics.createShader(gridSrc, "fullscreen", {
