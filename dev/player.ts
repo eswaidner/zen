@@ -1,9 +1,17 @@
 import { vec2 } from "gl-matrix";
 import { FaceVelocity, Movement } from "./movement";
 import { SmoothFollow } from "./camera";
-import { createRenderPass, Renderer } from "../src/graphics";
-import { Graphics, Input, Schedule, State, Time, Transform } from "../src/zen";
-import { Attribute, Entity } from "../src/state";
+import {
+  Attribute,
+  Entity,
+  Graphics,
+  Input,
+  Renderer,
+  Schedule,
+  State,
+  Time,
+  Transform,
+} from "../src/zen";
 
 async function init() {
   const shader = Graphics.createShader(
@@ -22,7 +30,7 @@ async function init() {
     "world",
   );
 
-  const pass = createRenderPass(shader);
+  const pass = Graphics.createRenderPass(shader);
 
   const p = State.createEntity("player");
   State.addAttribute(p, Player, new Player());
