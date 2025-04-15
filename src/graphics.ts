@@ -1,4 +1,4 @@
-import { mat2d, mat3, vec2 } from "gl-matrix";
+import { mat2d, mat3, vec2, vec4 } from "gl-matrix";
 import { Schedule, State, Transform, View } from "./zen";
 import { Attribute, Entity } from "./state";
 
@@ -7,6 +7,8 @@ import presentSrc from "./present.frag?raw";
 
 const gl = View.gl();
 const framebuffer: Framebuffer = createFramebuffer();
+const verts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1]);
+const modelBuffer: WebGLBuffer = gl.createBuffer();
 const shaders: ShaderData[] = [];
 const renderPasses: RenderPassData[] = [];
 let presentPass: RenderPass;
@@ -34,6 +36,14 @@ function init() {
   });
 }
 
+export function setRenderPassActive(pass: RenderPass, enable: boolean) {
+  getRenderPassData(pass).enabled = enable;
+}
+
+export function setBackgroundColor(color: vec4) {
+  View.gl().clearColor(color[0], color[1], color[2], color[3]);
+}
+
 export function createRenderPass(
   shader: Shader,
   options: {
@@ -47,7 +57,7 @@ export function createRenderPass(
 
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
-  const modelBuffer = createModelBuffer();
+  attachModelBuffer(modelBuffer);
   const instanceBuffer = createInstanceBuffer(shaderData);
   gl.bindVertexArray(null);
 
@@ -81,12 +91,12 @@ export function createRenderPass(
 
   const pass: RenderPassData = {
     id: renderPasses.length as RenderPass,
+    enabled: true,
     shader: shaderData,
     depthTest,
     depthWrite,
     blend,
     vao,
-    modelBuffer,
     instanceBuffer,
     drawOrder: options.drawOrder || 0,
     uniformValues: {},
@@ -179,12 +189,12 @@ function glBlend(blend: Blend): GLenum {
 
 interface RenderPassData {
   id: RenderPass;
+  enabled: boolean;
   shader: ShaderData;
   depthTest: GLenum | null;
   depthWrite: boolean;
   blend: { src: GLenum; dest: GLenum } | null;
   vao: WebGLVertexArrayObject;
-  modelBuffer: WebGLBuffer;
   instanceBuffer: WebGLBuffer;
   drawOrder: number;
   uniformValues: Record<string, UniformValue>;
@@ -391,9 +401,11 @@ function render() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
   for (const pass of renderPasses) {
+    if (!pass.enabled) continue;
     if (pass.id === presentPass) pass.instanceCount = 1;
     executeRenderPass(pass);
   }
+
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
@@ -832,11 +844,8 @@ function createInstanceBuffer(shader: ShaderData): WebGLBuffer {
   return buf;
 }
 
-function createModelBuffer(): WebGLBuffer {
-  const verts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1]);
-
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+function attachModelBuffer(buffer: WebGLBuffer) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
 
   // _LOCAL_POS
   gl.enableVertexAttribArray(0);
@@ -844,7 +853,6 @@ function createModelBuffer(): WebGLBuffer {
   gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
 
   gl.bindBuffer(gl.ARRAY_BUFFER, null);
-  return buf;
 }
 
 const defaultProperties = new Set([

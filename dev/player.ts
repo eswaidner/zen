@@ -1,4 +1,4 @@
-import { vec2 } from "gl-matrix";
+import { vec2, vec3 } from "gl-matrix";
 import { FaceVelocity, Movement } from "./movement";
 import { SmoothFollow } from "./camera";
 import {
