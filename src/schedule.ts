@@ -9,7 +9,6 @@ let nextTaskId: number = 0;
 
 const signals: SignalState[] = [];
 const signalIntervals: SignalTimestep[] = [];
-let nextSignalId: number = 0;
 
 // default signals
 export const start = signal();
@@ -109,20 +108,17 @@ function createTask(options: TaskOptions): Task {
 }
 
 function createSignal(): Signal {
-  const s = nextSignalId as Signal;
-  nextSignalId++;
-
-  const sig: SignalState = {
-    id: s,
+  const s: SignalState = {
+    id: signals.length as Signal,
     timeSinceRun: 0,
     tasks: [],
     precededBy: [],
     followedBy: [],
   };
 
-  signals.push(sig);
+  signals.push(s);
 
-  return s;
+  return s.id;
 }
 
 Time.onStart(() => {

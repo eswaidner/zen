@@ -73,6 +73,7 @@ export function removeAttribute(ent: Entity, key: object) {
 export interface Query {
   include: object[];
   exclude?: object[];
+  filter?: (e: Entity) => boolean[];
 }
 
 export function query(q: Query): Entity[] {
@@ -84,31 +85,34 @@ export function query(q: Query): Entity[] {
   const entities: Entity[] = [];
 
   // check all instances of base attribute for matches
-  for (let ent of base.keys()) {
+  for (let e of base.keys()) {
     let match = true;
 
     // reject entity if a required attribute is missing
     for (let j = 1; j < q.include.length; j += 1) {
       const attr = getAttributeStorage(q.include[j]);
-      if (!attr?.get(ent)) {
+      if (!attr?.get(e)) {
         match = false;
         break;
       }
     }
 
-    // reject entity if an excluded attribute is set
+    // reject entity if an excluded attribute is present
     if (match && q.exclude) {
       for (let j = 0; j < q.exclude.length; j += 1) {
         const attr = getAttributeStorage(q.exclude[j]);
-        if (attr && attr.get(ent)) {
+        if (attr?.get(e)) {
           match = false;
           break;
         }
       }
     }
 
+    // reject entity if filter function returns false
+    if (match && q.filter && !q.filter(e)) match = false;
+
     // add values to query result
-    if (match) entities.push(ent);
+    if (match) entities.push(e);
   }
 
   return entities;
