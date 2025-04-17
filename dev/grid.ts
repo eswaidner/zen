@@ -6,7 +6,11 @@ import gridSrc from "./shaders/grid.frag?raw";
 const gridShader = Graphics.createShader(gridSrc, "fullscreen", {
   inputs: ["COLOR"],
 });
-const pass = Graphics.createRenderPass(gridShader, { drawOrder: -1 });
+const pass = Graphics.createRenderPass(gridShader, {
+  drawOrder: -1,
+  inputs: { COLOR: "COLOR" },
+  outputs: { COLOR: "COLOR" },
+});
 
 const e = State.createEntity();
 State.addAttribute(e, Graphics.Renderer, new Graphics.Renderer(pass));

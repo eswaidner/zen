@@ -17,20 +17,27 @@ async function init() {
   const shader = Graphics.createShader(
     `#version 300 es
   precision highp float;
+  precision highp sampler2DArray;
 
   in vec2 SCREEN_POS;
   in vec2 WORLD_POS;
   in vec2 LOCAL_POS;
+  in float INDEX;
+
+  uniform sampler2DArray sprites;
 
   out vec4 OUT_COLOR;
   void main() {
-    OUT_COLOR = vec4(LOCAL_POS, 0.0, 1.0);
+    // OUT_COLOR = vec4(LOCAL_POS, 0.0, 1.0);
+    OUT_COLOR = texture(sprites, vec3(LOCAL_POS, INDEX));
   }
   `,
     "world",
   );
 
-  const pass = Graphics.createRenderPass(shader);
+  const pass = Graphics.createRenderPass(shader, {
+    outputs: { COLOR: "COLOR" },
+  });
 
   const p = State.createEntity("player");
   State.addAttribute(p, Player, new Player());

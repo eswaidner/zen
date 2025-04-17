@@ -11,6 +11,7 @@ const verts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1]);
 const modelBuffer: WebGLBuffer = gl.createBuffer();
 const shaders: ShaderData[] = [];
 const renderPasses: RenderPassData[] = [];
+const textures: TextureData[] = [];
 let presentPass: RenderPass;
 
 const OpaqueShader = Symbol(); // opaque type tag
@@ -26,7 +27,11 @@ function init() {
   createRenderTexture("COLOR");
 
   const present = createShader(presentSrc, "fullscreen", { inputs: ["COLOR"] });
-  presentPass = createRenderPass(present, { drawOrder: Infinity });
+  presentPass = createRenderPass(present, {
+    drawOrder: Infinity,
+    inputs: { COLOR: "COLOR" },
+    outputs: { COLOR: "COLOR" },
+  });
 
   const renderSignal = Schedule.signalAfter(Schedule.update);
   Schedule.onSignal(renderSignal, {
@@ -51,6 +56,8 @@ export function createRenderPass(
     depthTest?: DepthTest | "none";
     depthWrite?: boolean;
     blend?: BlendFunction;
+    inputs?: Record<string, string>; // shader input name : render texture name
+    outputs?: Record<string, string>; // shader output name : render texture name
   } = {},
 ): RenderPass {
   const shaderData = shaders[shader];
@@ -62,13 +69,26 @@ export function createRenderPass(
   gl.bindVertexArray(null);
 
   const inputs: number[] = [];
-  for (const i of shaderData.inputs) {
-    inputs.push(createRenderTexture(i.name));
+  for (const [inputName, rtName] of Object.entries(options.inputs || {})) {
+    if (!shaderData.inputs.find((i) => i.name === inputName)) {
+      throw new Error(`undefined shader input '${inputName}'`);
+    }
+
+    inputs.push(createRenderTexture(rtName));
   }
 
   const outputs: number[] = [];
-  for (const o of shaderData.outputs) {
-    outputs.push(createRenderTexture(o.name));
+  for (const [outName, rtName] of Object.entries(options.outputs || {})) {
+    if (!shaderData.outputs.find((i) => i.name === outName)) {
+      throw new Error(`undefined shader output '${outName}'`);
+    }
+
+    outputs.push(createRenderTexture(rtName));
+  }
+
+  const outputDelta = shaderData.outputs.length - outputs.length;
+  if (outputDelta !== 0) {
+    throw new Error(`render pass missing ${outputDelta} outputs from shader`);
   }
 
   const depthOpt = options.depthTest || "less-equal";
@@ -89,6 +109,14 @@ export function createRenderPass(
     if (activate) activeIdx++;
   }
 
+  // create textures for sampler2DArray uniforms
+  const textures: Record<string, TextureData> = {};
+  for (const u of shaderData.uniforms) {
+    if (u.type !== "sampler2DArray") continue;
+    //TODO handle textures as independent resources able to be shared between render passes
+    // textures[u.name] = new Texture();
+  }
+
   const pass: RenderPassData = {
     id: renderPasses.length as RenderPass,
     enabled: true,
@@ -101,7 +129,7 @@ export function createRenderPass(
     drawOrder: options.drawOrder || 0,
     uniformValues: {},
     samplerSettings: {},
-    textureArrays: {},
+    textures,
     inputs,
     outputs,
     activeAttachments,
@@ -199,7 +227,7 @@ interface RenderPassData {
   drawOrder: number;
   uniformValues: Record<string, UniformValue>;
   samplerSettings: Record<string, SamplerSettings>;
-  textureArrays: Record<string, TextureData>;
+  textures: Record<string, TextureData>;
   inputs: number[]; // render texture idx
   outputs: number[]; // render texture idx
   activeAttachments: GLenum[]; // gl.drawBuffers list
@@ -221,22 +249,28 @@ export function setUniform(pass: RenderPass, name: string, value: GLValue) {
   passData.uniformValues[name] = { uniform: u, value };
 }
 
-export function setTexture(pass: RenderPass, name: string, value: TextureData) {
+export function setTexture(
+  pass: RenderPass,
+  name: string,
+  index: number,
+  source: TexImageSource,
+) {
   const passData = getRenderPassData(pass);
+
+  const tex = passData.textures[name];
+  if (!tex) throw new Error(`undefined texture '${name}'`);
+
+  tex.setLayer(index, source);
 
   const u = passData.shader.uniforms.find((u) => u.name === name);
   if (!u || u.type !== "sampler2DArray") {
     console.log(`WARNING: texture '${name}' missing sampler`);
   }
-
-  passData.textureArrays[name] = value;
 }
 
 function getRenderPassData(id: RenderPass): RenderPassData {
   return renderPasses.find((p) => p.id === id)!;
 }
-
-// export function createTexture() {}
 
 function executeRenderPass(p: RenderPassData) {
   // bind objects (program, vao, framebuffer)
@@ -247,8 +281,10 @@ function executeRenderPass(p: RenderPassData) {
   // activate framebuffer attachments
   gl.drawBuffers(p.activeAttachments);
 
-  // bind render texture inputs
+  // should never exceed 15
   let texUnit = 0;
+
+  // bind render texture inputs
   for (const rtIdx of p.inputs) {
     const rt = framebuffer.renderTextures[rtIdx];
 
@@ -260,11 +296,16 @@ function executeRenderPass(p: RenderPassData) {
     texUnit++;
   }
 
-  for (const [name, tex] of Object.entries(p.textureArrays)) {
-    //TODO bind textures to texture units
-    //TODO update sampler uniform values
-    //TODO upload sampler parameters
+  // bind textures
+  for (const [name, tex] of Object.entries(p.textures)) {
+    gl.activeTexture(gl.TEXTURE0 + texUnit);
+    gl.bindTexture(gl.TEXTURE_2D, tex.texture);
+    setUniform(p.id, name, { type: "int", value: texUnit });
+
+    texUnit++;
   }
+
+  //TODO upload sampler parameters
 
   // update builtin uniform values
   const vpTRS = View.transform().trs();
@@ -378,6 +419,9 @@ function enqueueInstance(e: Entity) {
 
   // _DEPTH built-in property
   pass.propertyValues.push(r.depth);
+
+  // _INDEX built-in property
+  pass.propertyValues.push(r.index);
 
   // add value to property data buffer
   for (const p of r.properties) {
@@ -528,6 +572,7 @@ export function createShader(
     properties.push({ name: "_TRANSFORM", type: "mat3", location: 0 });
   }
   properties.push({ name: "_DEPTH", type: "float", location: 0 });
+  properties.push({ name: "_INDEX", type: "float", location: 0 });
 
   for (const [name, type] of Object.entries(options.properties || {})) {
     properties.push({ name, type, location: 0 });
@@ -668,33 +713,28 @@ interface Uniform {
   location: WebGLUniformLocation;
 }
 
-type TextureSource = HTMLImageElement | Uint8ClampedArray;
-
 class TextureData {
-  // id: Texture;
+  texture: WebGLTexture;
   size: TextureSize;
   layers: number;
-  unit: number | null = null;
-  // TODO mipmap settings
 
-  private data: Uint8ClampedArray;
-  private texture: WebGLTexture;
-
-  constructor(size: TextureSize, layers: number, sources: TextureSource[]) {
+  constructor(size: TextureSize, layers: number) {
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-    //TODO upload texture array data from source (treat as atlas)
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, size, size, layers);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
     this.size = size;
     this.layers = layers;
-    this.data = new Uint8ClampedArray();
     this.texture = tex;
   }
 
-  //TODO
-  // get(x, y, depth): vec4
-  // set(x, y, depth, vec4)
+  setLayer(layer: number, source: TexImageSource) {
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
+    // prettier-ignore
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, this.size, this.size, 1, gl.RGBA8, gl.RGBA8, source);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  }
 }
 
 function scaleTextureSize(size: vec2, scale: number): vec2 {
@@ -767,15 +807,20 @@ function getPropertySize(p: Property): number {
 export class Renderer extends Attribute {
   pass: RenderPass;
   depth: number; // [0.0, 1.0] range
+  index: number;
   properties: GLValue[] = [];
 
   private passData: RenderPassData;
 
-  constructor(pass: RenderPass, options: { depth?: number } = {}) {
+  constructor(
+    pass: RenderPass,
+    options: { depth?: number; index?: number } = {},
+  ) {
     super();
     this.pass = pass;
     this.passData = getRenderPassData(pass);
     this.depth = options.depth !== undefined ? options.depth : 1;
+    this.index = options.index || 0;
   }
 
   setProperty(name: string, value: GLValue): Renderer {
@@ -858,7 +903,9 @@ function attachModelBuffer(buffer: WebGLBuffer) {
 const defaultProperties = new Set([
   "_TRANSFORM",
   "_DEPTH",
+  "_INDEX",
   "DEPTH",
+  "INDEX",
   "SCREEN_POS",
   "WORLD_POS",
   "LOCAL_POS",
@@ -896,9 +943,11 @@ function generateVertexShader(
   layout(location = 0) in vec2 _LOCAL_POS; // per-vertex
   ${mode === "world" ? "in mat3 _TRANSFORM; // per-instance" : ""}
   in float _DEPTH; // per-instance
+  in float _INDEX; // per-instance
   ${attributes}
 
   out float DEPTH;
+  out float INDEX;
   out vec2 SCREEN_POS;
   out vec2 WORLD_POS;
   out vec2 LOCAL_POS;
@@ -908,6 +957,7 @@ function generateVertexShader(
     vec3 world = ${world_pos_calc};
 
     DEPTH = min(0.0, max(1.0, _DEPTH));
+    INDEX = _INDEX;
     SCREEN_POS = ${screen_pos_calc}.xy;
     WORLD_POS = world.xy;
     LOCAL_POS = _LOCAL_POS;
