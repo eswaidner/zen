@@ -33,10 +33,27 @@ async function init() {
   }
   `,
     "world",
+    { uniforms: { sprites: "sampler2DArray" } },
   );
+
+  const playerImg = new Image();
+  playerImg.src = "./chrome_icon.png";
+
+  playerImg.addEventListener("load", () => {
+    const idx = Graphics.addTextureLayer(sprites, playerImg);
+  });
+
+  const sprites = Graphics.createTexture(256, 1);
 
   const pass = Graphics.createRenderPass(shader, {
     outputs: { COLOR: "COLOR" },
+    blend: { src: "src-alpha", dest: "one-minus-src-alpha" },
+  });
+
+  Graphics.setUniform(pass, "sprites", {
+    type: "texture",
+    value: sprites,
+    unit: 0,
   });
 
   const p = State.createEntity("player");
@@ -44,7 +61,7 @@ async function init() {
   State.addAttribute(p, Transform, new Transform({ pivot: [0.5, 0.5] }));
   State.addAttribute(p, Movement, new Movement({ decay: 0.4, mass: 1 }));
   State.addAttribute(p, FaceVelocity, new FaceVelocity());
-  State.addAttribute(p, Renderer, new Renderer(pass));
+  State.addAttribute(p, Renderer, new Renderer(pass, { index: 0 }));
   State.addAttribute(p, PlayerInput, new PlayerInput());
 
   Schedule.onSignal(Schedule.update, {

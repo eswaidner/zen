@@ -49,6 +49,12 @@ export function setBackgroundColor(color: vec4) {
   View.gl().clearColor(color[0], color[1], color[2], color[3]);
 }
 
+export function createTexture(size: TextureSize, layers: number): Texture {
+  const validLayers = Math.floor(Math.max(1, layers));
+  const tex = new TextureData(size, validLayers);
+  return tex.id;
+}
+
 export function createRenderPass(
   shader: Shader,
   options: {
@@ -109,14 +115,6 @@ export function createRenderPass(
     if (activate) activeIdx++;
   }
 
-  // create textures for sampler2DArray uniforms
-  const textures: Record<string, TextureData> = {};
-  for (const u of shaderData.uniforms) {
-    if (u.type !== "sampler2DArray") continue;
-    //TODO handle textures as independent resources able to be shared between render passes
-    // textures[u.name] = new Texture();
-  }
-
   const pass: RenderPassData = {
     id: renderPasses.length as RenderPass,
     enabled: true,
@@ -129,7 +127,6 @@ export function createRenderPass(
     drawOrder: options.drawOrder || 0,
     uniformValues: {},
     samplerSettings: {},
-    textures,
     inputs,
     outputs,
     activeAttachments,
@@ -227,7 +224,6 @@ interface RenderPassData {
   drawOrder: number;
   uniformValues: Record<string, UniformValue>;
   samplerSettings: Record<string, SamplerSettings>;
-  textures: Record<string, TextureData>;
   inputs: number[]; // render texture idx
   outputs: number[]; // render texture idx
   activeAttachments: GLenum[]; // gl.drawBuffers list
@@ -249,23 +245,18 @@ export function setUniform(pass: RenderPass, name: string, value: GLValue) {
   passData.uniformValues[name] = { uniform: u, value };
 }
 
-export function setTexture(
-  pass: RenderPass,
-  name: string,
+export function addTextureLayer(texture: Texture, src: TexImageSource): number {
+  const texData = textures[texture];
+  return texData.addLayer(src);
+}
+
+export function setTextureLayer(
+  texture: Texture,
   index: number,
-  source: TexImageSource,
+  src: TexImageSource,
 ) {
-  const passData = getRenderPassData(pass);
-
-  const tex = passData.textures[name];
-  if (!tex) throw new Error(`undefined texture '${name}'`);
-
-  tex.setLayer(index, source);
-
-  const u = passData.shader.uniforms.find((u) => u.name === name);
-  if (!u || u.type !== "sampler2DArray") {
-    console.log(`WARNING: texture '${name}' missing sampler`);
-  }
+  const texData = textures[texture];
+  texData.setLayer(index, src);
 }
 
 function getRenderPassData(id: RenderPass): RenderPassData {
@@ -297,10 +288,19 @@ function executeRenderPass(p: RenderPassData) {
   }
 
   // bind textures
-  for (const [name, tex] of Object.entries(p.textures)) {
+  for (const [name, value] of Object.entries(p.uniformValues)) {
+    if (value.value.type !== "texture") continue;
+    const texValue = value.value;
+
+    const texData = textures[texValue.value];
+
     gl.activeTexture(gl.TEXTURE0 + texUnit);
-    gl.bindTexture(gl.TEXTURE_2D, tex.texture);
-    setUniform(p.id, name, { type: "int", value: texUnit });
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texData.texture);
+    setUniform(p.id, name, {
+      type: "texture",
+      value: texValue.value,
+      unit: texUnit,
+    });
 
     texUnit++;
   }
@@ -390,6 +390,10 @@ function uploadUniformValue(u: UniformValue) {
       break;
     case "int":
       gl.uniform1i(u.uniform.location, u.value.value);
+      break;
+    case "texture":
+      gl.uniform1i(u.uniform.location, u.value.unit);
+      break;
   }
 }
 
@@ -532,7 +536,9 @@ function updateFramebuffer() {
   framebuffer.size = newBuffer.size;
 }
 
-function createTexture(size: vec2): WebGLTexture {
+type ShaderMode = "world" | "fullscreen";
+
+function createGLTexture(size: vec2): WebGLTexture {
   const tex = gl.createTexture();
 
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -541,8 +547,6 @@ function createTexture(size: vec2): WebGLTexture {
 
   return tex;
 }
-
-type ShaderMode = "world" | "fullscreen";
 
 export function createShader(
   source: string,
@@ -665,7 +669,7 @@ function compileShader(
 }
 
 type GLType = "float" | "vec2" | "mat3" | "int";
-type GLValue = FloatValue | Vec2Value | Mat3Value | IntValue;
+type GLValue = FloatValue | Vec2Value | Mat3Value | IntValue | TextureValue;
 type GLSamplerType = "sampler2D" | "sampler2DArray";
 
 // prettier-ignore
@@ -691,6 +695,12 @@ interface IntValue {
   value: number;
 }
 
+interface TextureValue {
+  type: "texture";
+  value: Texture;
+  unit: number;
+}
+
 interface Property {
   name: string;
   type: GLType;
@@ -714,9 +724,10 @@ interface Uniform {
 }
 
 class TextureData {
+  id: Texture;
   texture: WebGLTexture;
   size: TextureSize;
-  layers: number;
+  layers: number[]; // 0 indicates unused layer, 1 indicates used layer
 
   constructor(size: TextureSize, layers: number) {
     const tex = gl.createTexture();
@@ -724,15 +735,41 @@ class TextureData {
     gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, size, size, layers);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
+    this.layers = [];
+    for (let i = 0; i < layers; i++) this.layers.push(0);
+
+    this.id = textures.length as Texture;
     this.size = size;
-    this.layers = layers;
     this.texture = tex;
+
+    textures.push(this);
+  }
+
+  addLayer(source: TexImageSource): number {
+    let layer = -1;
+    for (let i = 0; i < this.layers.length; i++) {
+      if (this.layers[i] === 0) {
+        layer = i;
+        break;
+      }
+    }
+
+    if (layer === -1) {
+      throw new Error(
+        `failed to add layer, texture at capacity (${this.layers.length})`,
+      );
+    }
+
+    this.setLayer(layer, source);
+    return layer;
   }
 
   setLayer(layer: number, source: TexImageSource) {
+    this.layers[layer] = 1;
+
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
     // prettier-ignore
-    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, this.size, this.size, 1, gl.RGBA8, gl.RGBA8, source);
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, this.size, this.size, 1, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
   }
 }
@@ -761,8 +798,8 @@ class RenderTexture {
 
     this.name = name;
     this.size = texSize;
-    this.writeTexture = createTexture(texSize);
-    this.readTexture = createTexture(texSize);
+    this.writeTexture = createGLTexture(texSize);
+    this.readTexture = createGLTexture(texSize);
   }
 
   updateSize() {
@@ -775,8 +812,8 @@ class RenderTexture {
     gl.deleteTexture(this.writeTexture);
     gl.deleteTexture(this.readTexture);
 
-    this.writeTexture = createTexture(newSize);
-    this.readTexture = createTexture(newSize);
+    this.writeTexture = createGLTexture(newSize);
+    this.readTexture = createGLTexture(newSize);
 
     this.size = newSize;
   }
