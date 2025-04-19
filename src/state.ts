@@ -73,7 +73,7 @@ export function removeAttribute(ent: Entity, key: object) {
 export interface Query {
   include: object[];
   exclude?: object[];
-  filter?: (e: Entity) => boolean[];
+  filter?: (e: Entity) => boolean;
 }
 
 export function query(q: Query): Entity[] {

@@ -419,7 +419,9 @@ function enqueueInstance(e: Entity) {
   }
 
   // _TRANSFORM built-in property
-  if (t) pass.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.trs()));
+  if (t) {
+    pass.propertyValues.push(...mat3.fromMat2d(mat3.create(), t.worldTrs()));
+  }
 
   // _DEPTH built-in property
   pass.propertyValues.push(r.depth);
@@ -431,7 +433,7 @@ function enqueueInstance(e: Entity) {
   for (const p of r.properties) {
     if (p.type === "float" || p.type === "int") {
       pass.propertyValues.push(p.value);
-    } else {
+    } else if (p.type === "vec2" || p.type === "mat3") {
       pass.propertyValues.push(...p.value);
     }
   }
@@ -617,9 +619,11 @@ export function createShader(
     u.location = gl.getUniformLocation(program, u.name)!;
   }
 
-  // get property locations
+  // get property locations and calculate instance stride
+  let instanceStride = 0;
   for (const p of properties) {
     p.location = gl.getAttribLocation(program, p.name);
+    instanceStride += getPropertySize(p);
   }
 
   // get output locations
@@ -633,6 +637,7 @@ export function createShader(
     mode,
     uniforms,
     properties,
+    instanceStride,
     inputs,
     outputs,
   };
@@ -647,6 +652,7 @@ export interface ShaderData {
   mode: ShaderMode;
   uniforms: Uniform[];
   properties: Property[];
+  instanceStride: number;
   inputs: Input[];
   outputs: Output[];
 }
@@ -894,7 +900,7 @@ function createInstanceBuffer(shader: ShaderData): WebGLBuffer {
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 
   // number of f32s per instance
-  let stride = 0;
+  let offset = 0;
 
   // set up attributes
   for (const p of shader.properties) {
@@ -914,11 +920,11 @@ function createInstanceBuffer(shader: ShaderData): WebGLBuffer {
         cols, // can be 1-4 (elements)
         gl.FLOAT, // 32-bit float
         false, // do not normalize
-        totalElements * 4, // size * sizeof(type)
-        stride * 4, // buffer byte offset
+        shader.instanceStride * 4, // total instance stride
+        offset * 4, // buffer byte offset
       );
 
-      stride += cols;
+      offset += cols;
     }
   }
 

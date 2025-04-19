@@ -1,7 +1,20 @@
 import { mat2d, vec2 } from "gl-matrix";
-import { Attribute } from "./state";
+import { Attribute, Entity, Schedule, State } from "./zen";
 
-//TODO relative transforms
+function init() {
+  const transformSync = Schedule.signalAfter(Schedule.update);
+  Schedule.onSignal(transformSync, {
+    query: {
+      include: [Transform],
+    },
+    foreach: applyTransforms,
+  });
+}
+
+function applyTransforms(e: Entity) {
+  const transform = State.getAttribute<Transform>(e, Transform)!;
+  transform.updateWorldTrs();
+}
 
 export class Transform extends Attribute {
   pos: vec2;
@@ -9,17 +22,26 @@ export class Transform extends Attribute {
   scale: vec2;
   pivot: vec2;
 
-  constructor(properties?: {
-    pos?: vec2;
-    rot?: number;
-    scale?: vec2;
-    pivot?: vec2;
-  }) {
+  private _parent: Transform | null = null;
+  private children: Transform[] = [];
+  private _worldTrs: mat2d = mat2d.create();
+
+  constructor(
+    properties: {
+      pos?: vec2;
+      rot?: number;
+      scale?: vec2;
+      pivot?: vec2;
+      parent?: Transform;
+    } = {},
+  ) {
     super();
-    this.pos = properties?.pos || [0, 0];
-    this.rot = properties?.rot || 0;
-    this.scale = properties?.scale || [1, 1];
-    this.pivot = properties?.pivot || [0, 0];
+    this.pos = properties.pos || [0, 0];
+    this.rot = properties.rot || 0;
+    this.scale = properties.scale || [1, 1];
+    this.pivot = properties.pivot || [0, 0];
+    this.setParent(properties.parent || null);
+    this.updateWorldTrs();
   }
 
   trs(): mat2d {
@@ -39,8 +61,48 @@ export class Transform extends Attribute {
     return m;
   }
 
-  trsi(): mat2d {
+  inverseTrs(): mat2d {
     const trs = this.trs();
     return mat2d.invert(trs, trs);
   }
+
+  worldTrs(): mat2d {
+    return this._worldTrs;
+  }
+
+  parent(): Transform | null {
+    return this._parent;
+  }
+
+  setParent(parent: Transform | null) {
+    //! NEVER CREATE A CIRCULAR RELATIONSHIP
+
+    if (parent === this._parent) return;
+
+    // remove current parent
+    if (this._parent) {
+      let childIndex = this._parent.children.findIndex((c) => c === this);
+      this._parent.children.splice(childIndex, 1);
+      this._parent = null;
+    }
+
+    this._parent = parent;
+    if (parent) parent.children.push();
+  }
+
+  updateWorldTrs() {
+    if (this._parent) {
+      mat2d.multiply(this._worldTrs, this._parent._worldTrs, this.trs());
+    } else {
+      this._worldTrs = this.trs();
+    }
+
+    for (let i = 0; i < this.children.length; i++) {
+      this.children[i].updateWorldTrs();
+    }
+  }
+
+  //TODO world pos/rot/scale
 }
+
+init();

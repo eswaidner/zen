@@ -57,12 +57,48 @@ async function init() {
   });
 
   const p = State.createEntity("player");
+  const pTransform = new Transform({ pivot: [0.5, 0.5] });
+
   State.addAttribute(p, Player, new Player());
-  State.addAttribute(p, Transform, new Transform({ pivot: [0.5, 0.5] }));
+  State.addAttribute(p, Transform, pTransform);
   State.addAttribute(p, Movement, new Movement({ decay: 0.4, mass: 1 }));
   State.addAttribute(p, FaceVelocity, new FaceVelocity());
-  State.addAttribute(p, Renderer, new Renderer(pass, { index: 0 }));
+  State.addAttribute(p, Renderer, new Renderer(pass, { index: 0, depth: 0.2 }));
   State.addAttribute(p, PlayerInput, new PlayerInput());
+
+  const pChild1 = State.createEntity();
+  State.addAttribute(
+    pChild1,
+    Transform,
+    new Transform({
+      pos: [1, 1],
+      scale: [0.7, 0.7],
+      pivot: [0.5, 0.5],
+      parent: pTransform,
+    }),
+  );
+  State.addAttribute(
+    pChild1,
+    Renderer,
+    new Renderer(pass, { index: 0, depth: 0.1 }),
+  );
+
+  const pChild2 = State.createEntity();
+  State.addAttribute(
+    pChild2,
+    Transform,
+    new Transform({
+      pos: [-1, -1],
+      scale: [0.7, 0.7],
+      pivot: [0.5, 0.5],
+      parent: pTransform,
+    }),
+  );
+  State.addAttribute(
+    pChild2,
+    Renderer,
+    new Renderer(pass, { index: 0, depth: 0.1 }),
+  );
 
   Schedule.onSignal(Schedule.update, {
     query: { include: [Player, PlayerInput, Movement] },
